@@ -1,0 +1,31 @@
+name: macOS CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    env:
+      CC: clang
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Build tools and test suites
+        run: make -j3 all
+
+      - name: Run tests
+        run: make test VERBOSE=1
+
+      - name: Run AddressSanitizer and UndefinedBehaviorSanitizer
+        run: make asan VERBOSE=1
