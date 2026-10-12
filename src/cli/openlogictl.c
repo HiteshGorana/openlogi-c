@@ -17,6 +17,7 @@
 #include <signal.h>
 #include <time.h>
 #include <sys/stat.h>
+#include <ctype.h>
 
 #define COLOR_RESET   "\033[0m"
 #define COLOR_BOLD    "\033[1m"
@@ -381,6 +382,540 @@ static int cmd_reload(void)
     }
 }
 
+static bool cmd_reload_silent(void)
+{
+    ipc_client_t client;
+    const char *sock = (g_custom_socket[0] != '\0') ? g_custom_socket : NULL;
+    if (!ipc_client_connect(sock, &client)) {
+        return false;
+    }
+    yyjson_doc *doc = ipc_client_call(&client, "openlogi.reload_config", "{}");
+    ipc_client_close(&client);
+    if (doc) {
+        yyjson_doc_free(doc);
+        return true;
+    }
+    return false;
+}
+
+/* Helper to read a scalar value from TOML file */
+static bool toml_read_key(const char *filepath, const char *key, char *out_val, size_t max_len)
+{
+    if (!filepath || !key || !out_val || max_len == 0) return false;
+    out_val[0] = '\0';
+
+    FILE *fp = fopen(filepath, "r");
+    if (!fp) return false;
+
+    char line[512];
+    size_t klen = strlen(key);
+    bool found = false;
+
+    while (fgets(line, sizeof(line), fp)) {
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '#' || *p == '\0' || *p == '\n') continue;
+
+        if (strncmp(p, key, klen) == 0) {
+            char *eq = p + klen;
+            while (*eq == ' ' || *eq == '\t') eq++;
+            if (*eq == '=') {
+                eq++;
+                while (*eq == ' ' || *eq == '\t') eq++;
+                char *end = eq + strlen(eq) - 1;
+                while (end > eq && (*end == '\n' || *end == '\r' || *end == ' ' || *end == '\t')) {
+                    *end = '\0';
+                    end--;
+                }
+                if (*eq == '"' && *end == '"' && end > eq) {
+                    eq++;
+                    *end = '\0';
+                }
+                strncpy(out_val, eq, max_len - 1);
+                out_val[max_len - 1] = '\0';
+                found = true;
+                break;
+            }
+        }
+    }
+
+    fclose(fp);
+    return found;
+}
+
+/* Helper to atomically modify or add a key in a TOML file */
+static bool toml_update_key(const char *filepath, const char *section_hint, const char *key, const char *new_val_literal, char *errbuf, size_t errbufsz)
+{
+    if (!filepath || !key || !new_val_literal) {
+        if (errbuf && errbufsz > 0) snprintf(errbuf, errbufsz, "Invalid parameters");
+        return false;
+    }
+
+    FILE *fp = fopen(filepath, "r");
+    if (!fp) {
+        fp = fopen(filepath, "w");
+        if (!fp) {
+            if (errbuf && errbufsz > 0) snprintf(errbuf, errbufsz, "Cannot create %s", filepath);
+            return false;
+        }
+        fprintf(fp, "schema_version = 7\n\n[devices.default]\n%s = %s\n", key, new_val_literal);
+        fclose(fp);
+        return true;
+    }
+
+    char tmp_path[540];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp.%d", filepath, getpid());
+    FILE *out = fopen(tmp_path, "w");
+    if (!out) {
+        fclose(fp);
+        if (errbuf && errbufsz > 0) snprintf(errbuf, errbufsz, "Cannot create temporary file %s", tmp_path);
+        return false;
+    }
+
+    char line[1024];
+    size_t klen = strlen(key);
+    bool key_replaced = false;
+    bool in_section = (section_hint == NULL);
+
+    while (fgets(line, sizeof(line), fp)) {
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+
+        if (*p == '[') {
+            if (section_hint) {
+                if (strstr(p, section_hint) != NULL) {
+                    in_section = true;
+                } else {
+                    if (in_section && !key_replaced) {
+                        fprintf(out, "%s = %s\n", key, new_val_literal);
+                        key_replaced = true;
+                    }
+                    in_section = false;
+                }
+            }
+            fputs(line, out);
+            continue;
+        }
+
+        if (in_section && !key_replaced && *p != '#') {
+            if (strncmp(p, key, klen) == 0) {
+                char *eq = p + klen;
+                while (*eq == ' ' || *eq == '\t') eq++;
+                if (*eq == '=') {
+                    fprintf(out, "%s = %s\n", key, new_val_literal);
+                    key_replaced = true;
+                    continue;
+                }
+            }
+        }
+
+        fputs(line, out);
+    }
+
+    if (!key_replaced) {
+        if (section_hint && !in_section) {
+            fprintf(out, "\n[%s]\n%s = %s\n", section_hint, key, new_val_literal);
+        } else {
+            fprintf(out, "%s = %s\n", key, new_val_literal);
+        }
+    }
+
+    fclose(fp);
+    fclose(out);
+
+    if (rename(tmp_path, filepath) != 0) {
+        unlink(tmp_path);
+        if (errbuf && errbufsz > 0) snprintf(errbuf, errbufsz, "Failed to update %s atomically", filepath);
+        return false;
+    }
+
+    return true;
+}
+
+/* --- Subcommand: scroll / wheel --- */
+static int cmd_scroll(int argc, char **argv)
+{
+    char cfg_path[512];
+    config_get_default_path(cfg_path, sizeof(cfg_path));
+
+    const char *sub = (argc > 0) ? argv[0] : "get";
+
+    if (strcmp(sub, "get") == 0) {
+        char inv_str[64] = "false";
+        char res_str[64] = "low";
+        char smooth_str[64] = "true";
+        char vert_sens[64] = "14";
+        char thumb_sens[64] = "14";
+
+        toml_read_key(cfg_path, "invert_scroll", inv_str, sizeof(inv_str));
+        toml_read_key(cfg_path, "scroll_resolution", res_str, sizeof(res_str));
+        toml_read_key(cfg_path, "smooth_scroll", smooth_str, sizeof(smooth_str));
+        toml_read_key(cfg_path, "vertical_scroll_sensitivity", vert_sens, sizeof(vert_sens));
+        toml_read_key(cfg_path, "thumbwheel_sensitivity", thumb_sens, sizeof(thumb_sens));
+
+        bool is_inv = (strcmp(inv_str, "true") == 0 || strcmp(inv_str, "1") == 0);
+        bool is_smooth = (strcmp(smooth_str, "true") == 0 || strcmp(smooth_str, "1") == 0);
+
+        if (g_json_output) {
+            printf("{\"invert_scroll\":%s,\"scroll_resolution\":\"%s\",\"smooth_scroll\":%s,\"vertical_scroll_sensitivity\":%s,\"thumbwheel_sensitivity\":%s,\"config_file\":\"%s\"}\n",
+                   is_inv ? "true" : "false", res_str, is_smooth ? "true" : "false", vert_sens, thumb_sens, cfg_path);
+            return 0;
+        }
+
+        print_banner();
+        printf("Mouse Scroll & Wheel Settings (" COLOR_CYAN "%s" COLOR_RESET "):\n", cfg_path);
+        printf("--------------------------------------------------------------------------------\n");
+        printf("  Invert Scroll:          %s\n",
+               is_inv ? COLOR_BOLD COLOR_GREEN "ENABLED (true - wheel reversed)" COLOR_RESET
+                      : COLOR_BOLD COLOR_YELLOW "DISABLED (false - standard)" COLOR_RESET);
+        printf("  Scroll Resolution:      %s (%s)\n",
+               res_str,
+               strcmp(res_str, "high") == 0 ? "high-resolution continuous ticks" : "discrete ratchet step per notch");
+        printf("  Smooth Scrolling:       %s\n",
+               is_smooth ? COLOR_GREEN "ENABLED" COLOR_RESET : COLOR_YELLOW "DISABLED" COLOR_RESET);
+        printf("  Vertical Sensitivity:   %s\n", vert_sens);
+        printf("  Thumbwheel Sensitivity: %s\n", thumb_sens);
+        printf("--------------------------------------------------------------------------------\n");
+        printf(COLOR_BOLD "Commands to adjust scrolling:" COLOR_RESET "\n");
+        printf("  Toggle Inversion:       openlogictl scroll invert toggle\n");
+        printf("  Set Inversion ON:       openlogictl scroll invert true\n");
+        printf("  Set Inversion OFF:      openlogictl scroll invert false\n");
+        printf("  Set Wheel Hi-Res:       openlogictl scroll resolution high\n");
+        printf("  Set Wheel Low-Res:      openlogictl scroll resolution low\n\n");
+        return 0;
+    } else if (strcmp(sub, "invert") == 0) {
+        char cur_inv[64] = "false";
+        toml_read_key(cfg_path, "invert_scroll", cur_inv, sizeof(cur_inv));
+        bool current = (strcmp(cur_inv, "true") == 0 || strcmp(cur_inv, "1") == 0);
+
+        bool new_val = false;
+        if (argc >= 2) {
+            const char *arg = argv[1];
+            if (strcasecmp(arg, "true") == 0 || strcasecmp(arg, "on") == 0 || strcmp(arg, "1") == 0) {
+                new_val = true;
+            } else if (strcasecmp(arg, "false") == 0 || strcasecmp(arg, "off") == 0 || strcmp(arg, "0") == 0) {
+                new_val = false;
+            } else if (strcasecmp(arg, "toggle") == 0) {
+                new_val = !current;
+            } else {
+                fprintf(stderr, "[-] Error: Invalid argument '%s'. Use 'true', 'false', 'on', 'off', or 'toggle'.\n", arg);
+                return 1;
+            }
+        } else {
+            new_val = !current;
+        }
+
+        char err[256];
+        if (!toml_update_key(cfg_path, "devices", "invert_scroll", new_val ? "true" : "false", err, sizeof(err))) {
+            fprintf(stderr, COLOR_RED "[-] Failed to update config: %s" COLOR_RESET "\n", err);
+            return 1;
+        }
+
+        bool reloaded = cmd_reload_silent();
+
+        if (g_json_output) {
+            printf("{\"success\":true,\"invert_scroll\":%s,\"daemon_reloaded\":%s}\n",
+                   new_val ? "true" : "false", reloaded ? "true" : "false");
+        } else {
+            printf(COLOR_BOLD COLOR_GREEN "[+] Inverted scrolling set to: %s (invert_scroll = %s)" COLOR_RESET "\n",
+                   new_val ? "ON" : "OFF", new_val ? "true" : "false");
+            printf("    Config updated at %s%s\n\n",
+                   cfg_path, reloaded ? " (daemon reloaded)" : " (will apply on daemon launch)");
+        }
+        return 0;
+    } else if (strcmp(sub, "resolution") == 0) {
+        if (argc < 2) {
+            fprintf(stderr, "[-] Error: Resolution value required ('low' or 'high').\n");
+            return 1;
+        }
+        const char *res_arg = argv[1];
+        if (strcasecmp(res_arg, "low") != 0 && strcasecmp(res_arg, "high") != 0) {
+            fprintf(stderr, "[-] Error: Resolution must be 'low' or 'high'.\n");
+            return 1;
+        }
+
+        char val_buf[32];
+        snprintf(val_buf, sizeof(val_buf), "\"%s\"", res_arg);
+
+        char err[256];
+        if (!toml_update_key(cfg_path, "devices", "scroll_resolution", val_buf, err, sizeof(err))) {
+            fprintf(stderr, COLOR_RED "[-] Failed to update config: %s" COLOR_RESET "\n", err);
+            return 1;
+        }
+
+        bool reloaded = cmd_reload_silent();
+
+        if (g_json_output) {
+            printf("{\"success\":true,\"scroll_resolution\":\"%s\",\"daemon_reloaded\":%s}\n",
+                   res_arg, reloaded ? "true" : "false");
+        } else {
+            printf(COLOR_BOLD COLOR_GREEN "[+] Wheel resolution set to: %s (scroll_resolution = \"%s\")" COLOR_RESET "\n",
+                   res_arg, res_arg);
+            printf("    Config updated at %s%s\n\n",
+                   cfg_path, reloaded ? " (daemon reloaded)" : " (will apply on daemon launch)");
+        }
+        return 0;
+    } else if (strcmp(sub, "smooth") == 0) {
+        if (argc < 2) {
+            fprintf(stderr, "[-] Error: Value required ('on', 'off', 'true', 'false').\n");
+            return 1;
+        }
+        bool smooth_val = (strcasecmp(argv[1], "on") == 0 || strcasecmp(argv[1], "true") == 0 || strcmp(argv[1], "1") == 0);
+        char err[256];
+        if (!toml_update_key(cfg_path, "app_settings", "smooth_scroll", smooth_val ? "true" : "false", err, sizeof(err))) {
+            fprintf(stderr, COLOR_RED "[-] Failed to update config: %s" COLOR_RESET "\n", err);
+            return 1;
+        }
+        cmd_reload_silent();
+        printf(COLOR_BOLD COLOR_GREEN "[+] Smooth scrolling set to: %s" COLOR_RESET "\n", smooth_val ? "ON" : "OFF");
+        return 0;
+    } else {
+        fprintf(stderr, "[-] Unknown scroll command '%s'. Available: 'get', 'invert', 'resolution', 'smooth'.\n", sub);
+        return 1;
+    }
+}
+
+/* --- Action Catalog Entry --- */
+typedef struct {
+    const char *category;
+    const char *name;
+    const char *desc;
+} cli_action_item_t;
+
+static const cli_action_item_t k_action_catalog[] = {
+    {"Navigation", "MissionControl", "Activates macOS Mission Control window overview"},
+    {"Navigation", "AppExpose", "Shows all windows of active foreground application"},
+    {"Navigation", "ShowDesktop", "Temporarily reveals the desktop"},
+    {"Navigation", "Launchpad", "Opens Launchpad application grid"},
+    {"Navigation", "NextSpace", "Switches to next desktop workspace"},
+    {"Navigation", "PrevSpace", "Switches to previous desktop workspace"},
+
+    {"Window/App", "AppSwitchNext", "Switches forward in app switcher (Cmd+Tab)"},
+    {"Window/App", "AppSwitchPrev", "Switches backward in app switcher (Cmd+Shift+Tab)"},
+    {"Window/App", "CloseWindow", "Closes frontmost window (Cmd+W)"},
+    {"Window/App", "MinimizeWindow", "Minimizes frontmost window (Cmd+M)"},
+    {"Window/App", "ToggleFullscreen", "Toggles full screen mode (Ctrl+Cmd+F)"},
+
+    {"Browser", "BrowserBack", "Navigates back in browser history (Cmd+[)"},
+    {"Browser", "BrowserForward", "Navigates forward in browser history (Cmd+])"},
+    {"Browser", "BrowserRefresh", "Reloads current web page (Cmd+R)"},
+    {"Browser", "BrowserNewTab", "Opens a new tab (Cmd+T)"},
+    {"Browser", "BrowserCloseTab", "Closes active tab (Cmd+W)"},
+    {"Browser", "BrowserReopenClosedTab", "Reopens last closed tab (Cmd+Shift+T)"},
+    {"Browser", "PrevTab", "Switches to previous tab (Ctrl+Shift+Tab)"},
+    {"Browser", "NextTab", "Switches to next tab (Ctrl+Tab)"},
+
+    {"System", "LockScreen", "Locks screen immediately (Cmd+Ctrl+Q)"},
+    {"System", "Sleep", "Puts computer to sleep immediately"},
+    {"System", "Screenshot", "Takes screenshot of entire screen (Cmd+Shift+3)"},
+    {"System", "CaptureRegion", "Interactive region screenshot tool (Cmd+Shift+4)"},
+
+    {"Media", "MediaPlayPause", "Toggles audio/video playback (Play/Pause key)"},
+    {"Media", "MediaNextTrack", "Skips to next track (Fast Forward key)"},
+    {"Media", "MediaPrevTrack", "Returns to previous track (Rewind key)"},
+    {"Media", "VolumeUp", "Increases master volume"},
+    {"Media", "VolumeDown", "Decreases master volume"},
+    {"Media", "VolumeMute", "Mutes / unmutes master audio"},
+
+    {"Editing", "Undo", "Undoes previous edit operation (Cmd+Z)"},
+    {"Editing", "Redo", "Redoes undone edit operation (Cmd+Shift+Z)"},
+    {"Editing", "Cut", "Cuts selection to clipboard (Cmd+X)"},
+    {"Editing", "Copy", "Copies selection to clipboard (Cmd+C)"},
+    {"Editing", "Paste", "Pastes from clipboard (Cmd+V)"},
+    {"Editing", "SelectAll", "Selects all content in document (Cmd+A)"},
+    {"Editing", "Find", "Opens Find/Search bar (Cmd+F)"},
+
+    {"Pointer", "LeftClick", "Synthetic primary mouse click"},
+    {"Pointer", "RightClick", "Synthetic secondary mouse click"},
+    {"Pointer", "MiddleClick", "Synthetic middle mouse button click"},
+    {"Pointer", "DoubleClick", "Double click primary mouse button"},
+    {"Pointer", "TripleClick", "Triple click primary mouse button"},
+    {"Pointer", "ScrollUp", "Synthesizes vertical scroll wheel up"},
+    {"Pointer", "ScrollDown", "Synthesizes vertical scroll wheel down"},
+    {"Pointer", "HorizontalScrollLeft", "Synthesizes horizontal thumbwheel scroll left"},
+    {"Pointer", "HorizontalScrollRight", "Synthesizes horizontal thumbwheel scroll right"},
+
+    {"Hardware", "ToggleSmartShift", "Toggles wheel clutch between ratchet and free-spin"},
+    {"Hardware", "CycleDpiPresets", "Rotates to next sensor DPI preset"},
+    {"Hardware", "ShowActionsRing", "Opens visual Actions Ring HUD overlay"},
+    {"Hardware", "None", "Suppresses click reporting (produces no action)"},
+
+    {"Advanced", "CustomShortcut", "Single key or chord: { CustomShortcut = \"Cmd+Shift+T\" }"},
+    {"Advanced", "HoldShortcut", "Modifier held with button: { HoldShortcut = \"Cmd\" }"},
+    {"Advanced", "SetDpiPreset", "Exact sensor resolution: { SetDpiPreset = 1600 }"},
+    {"Advanced", "OpenApplication", "App launch: { OpenApplication = \"/Applications/Safari.app\" }"},
+    {"Advanced", "TypeText", "Arbitrary text injection: { TypeText = \"Hello World\" }"},
+    {"Advanced", "RunAppleScript", "AppleScript: { RunAppleScript = \"beep\" }"},
+    {"Advanced", "RunShellCommand", "Shell command: { RunShellCommand = \"say hello\" }"},
+    {"Advanced", "Workflow", "Sequence: { Workflow = [ { PressKey = \"Cmd+Space\" }, { Delay = 50 } ] }"}
+};
+
+static int cmd_actions(int argc, char **argv)
+{
+    const char *filter = (argc > 0) ? argv[0] : NULL;
+    size_t total = sizeof(k_action_catalog) / sizeof(k_action_catalog[0]);
+
+    if (g_json_output) {
+        yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+        yyjson_mut_val *arr = yyjson_mut_arr(doc);
+        yyjson_mut_doc_set_root(doc, arr);
+
+        for (size_t i = 0; i < total; i++) {
+            if (filter && strcasestr(k_action_catalog[i].name, filter) == NULL &&
+                strcasestr(k_action_catalog[i].category, filter) == NULL) {
+                continue;
+            }
+            yyjson_mut_val *item = yyjson_mut_obj(doc);
+            yyjson_mut_obj_add_str(doc, item, "category", k_action_catalog[i].category);
+            yyjson_mut_obj_add_str(doc, item, "name", k_action_catalog[i].name);
+            yyjson_mut_obj_add_str(doc, item, "description", k_action_catalog[i].desc);
+            yyjson_mut_arr_add_val(arr, item);
+        }
+
+        char *json = yyjson_mut_write(doc, 0, NULL);
+        printf("%s\n", json ? json : "[]");
+        free(json);
+        yyjson_mut_doc_free(doc);
+        return 0;
+    }
+
+    print_banner();
+    printf("Supported Action Vocabulary (%zu actions available):\n", total);
+    printf("----------------------------------------------------------------------------------------\n");
+    printf(COLOR_BOLD "%-12s %-24s %-50s" COLOR_RESET "\n", "Category", "Action String", "Description");
+    printf("----------------------------------------------------------------------------------------\n");
+
+    size_t printed = 0;
+    for (size_t i = 0; i < total; i++) {
+        if (filter && strcasestr(k_action_catalog[i].name, filter) == NULL &&
+            strcasestr(k_action_catalog[i].category, filter) == NULL &&
+            strcasestr(k_action_catalog[i].desc, filter) == NULL) {
+            continue;
+        }
+        printf("%-12s " COLOR_BOLD "%-24s" COLOR_RESET " %-50s\n",
+               k_action_catalog[i].category, k_action_catalog[i].name, k_action_catalog[i].desc);
+        printed++;
+    }
+
+    if (printed == 0) {
+        printf("    No actions matched filter '%s'.\n", filter);
+    }
+    printf("----------------------------------------------------------------------------------------\n\n");
+    return 0;
+}
+
+/* --- Subcommand: options / schema --- */
+static int cmd_options(void)
+{
+    if (g_json_output) {
+        printf("{\"schema_version\":7,\"sections\":[\"app_settings\",\"devices\",\"smartshift\",\"bindings\"]}\n");
+        return 0;
+    }
+
+    print_banner();
+    printf(COLOR_BOLD "OpenLogi Configuration Schema & Supported Options Guide" COLOR_RESET "\n\n");
+
+    printf(COLOR_BOLD COLOR_GREEN "1. Application Settings [app_settings]" COLOR_RESET "\n");
+    printf("  smooth_scroll                 true | false      (Sub-pixel scroll momentum)\n");
+    printf("  vertical_scroll_sensitivity   1 .. 30           (Default: 14)\n");
+    printf("  thumbwheel_sensitivity        1 .. 30           (Default: 14)\n");
+    printf("  capture_mouse_events          true | false      (Intercept mouse buttons for diversion)\n");
+    printf("  launch_at_login               true | false      (Auto-start background service)\n");
+    printf("  appearance                    \"dark\" | \"light\" | \"system\"\n\n");
+
+    printf(COLOR_BOLD COLOR_GREEN "2. Per-Device Hardware Settings [devices.\"<device-key>\"]" COLOR_RESET "\n");
+    printf("  invert_scroll                 true | false      (Inverts vertical mouse wheel direction)\n");
+    printf("  scroll_resolution             \"low\" | \"high\"    (\"low\"=per-notch, \"high\"=hi-res ticks)\n");
+    printf("  dpi                           200 .. 32000      (Optical sensor DPI step)\n");
+    printf("  dpi_presets                   [800, 1600, 3200] (Array of DPI steps for CycleDpi)\n\n");
+
+    printf(COLOR_BOLD COLOR_GREEN "3. SmartShift Scroll Wheel [devices.\"<id>\".smartshift]" COLOR_RESET "\n");
+    printf("  mode                          \"ratchet\" | \"freespin\" | \"auto\" | \"disabled\"\n");
+    printf("  auto_disengage                1 .. 255          (Flick sensitivity to unlock wheel)\n\n");
+
+    printf(COLOR_BOLD COLOR_GREEN "4. Button & Gesture Bindings [devices.\"<id>\".bindings]" COLOR_RESET "\n");
+    printf("  MiddleClick, Back, Forward, DpiToggle, GestureButton, ThumbwheelScrollUp, ThumbwheelScrollDown\n");
+    printf("  Format A (Catalog Action):    Back = \"MissionControl\"\n");
+    printf("  Format B (Key Combination):   Forward = { CustomShortcut = \"Cmd+Shift+T\" }\n");
+    printf("  Format C (Held Modifier):     MiddleClick = { HoldShortcut = \"Cmd\" }\n");
+    printf("  Format D (5-way Gesture):     [devices.\"<id>\".bindings.GestureButton]\n");
+    printf("                                Click = \"MissionControl\"\n");
+    printf("                                Up    = \"MissionControl\"\n");
+    printf("                                Down  = \"ShowDesktop\"\n");
+    printf("                                Left  = \"PrevTab\"\n");
+    printf("                                Right = \"NextTab\"\n\n");
+
+    printf(COLOR_BOLD "Run 'openlogictl actions' to browse all 53 actions with descriptions." COLOR_RESET "\n\n");
+    return 0;
+}
+
+/* --- Subcommand: config --- */
+static int cmd_config(int argc, char **argv)
+{
+    char cfg_path[512];
+    config_get_default_path(cfg_path, sizeof(cfg_path));
+
+    const char *sub = (argc > 0) ? argv[0] : "show";
+
+    if (strcmp(sub, "path") == 0) {
+        printf("%s\n", cfg_path);
+        return 0;
+    } else if (strcmp(sub, "show") == 0) {
+        FILE *fp = fopen(cfg_path, "r");
+        if (!fp) {
+            fprintf(stderr, "[-] Config file not found at %s\n", cfg_path);
+            return 1;
+        }
+        if (!g_json_output) {
+            print_banner();
+            printf("Active Configuration File: " COLOR_CYAN "%s" COLOR_RESET "\n\n", cfg_path);
+        }
+        char line[512];
+        while (fgets(line, sizeof(line), fp)) {
+            fputs(line, stdout);
+        }
+        fclose(fp);
+        return 0;
+    } else if (strcmp(sub, "get") == 0) {
+        if (argc < 2) {
+            fprintf(stderr, "[-] Usage: openlogictl config get <key>\n");
+            return 1;
+        }
+        char val[128] = "";
+        if (toml_read_key(cfg_path, argv[1], val, sizeof(val))) {
+            if (g_json_output) {
+                printf("{\"key\":\"%s\",\"value\":\"%s\"}\n", argv[1], val);
+            } else {
+                printf("%s = %s\n", argv[1], val);
+            }
+            return 0;
+        } else {
+            fprintf(stderr, "[-] Key '%s' not found in %s\n", argv[1], cfg_path);
+            return 1;
+        }
+    } else if (strcmp(sub, "set") == 0) {
+        if (argc < 3) {
+            fprintf(stderr, "[-] Usage: openlogictl config set <key> <value>\n");
+            return 1;
+        }
+        const char *key = argv[1];
+        const char *val = argv[2];
+
+        char err[256];
+        if (!toml_update_key(cfg_path, "devices", key, val, err, sizeof(err))) {
+            fprintf(stderr, COLOR_RED "[-] Failed to update config: %s" COLOR_RESET "\n", err);
+            return 1;
+        }
+        bool reloaded = cmd_reload_silent();
+        printf(COLOR_BOLD COLOR_GREEN "[+] Set %s = %s in %s%s" COLOR_RESET "\n",
+               key, val, cfg_path, reloaded ? " (daemon reloaded)" : "");
+        return 0;
+    } else {
+        fprintf(stderr, "[-] Unknown config action '%s'. Use 'path', 'show', 'get', or 'set'.\n", sub);
+        return 1;
+    }
+}
+
 /* --- Subcommand: monitor --- */
 static volatile bool g_monitor_running = true;
 
@@ -691,15 +1226,25 @@ static void print_usage(const char *progname)
     printf("Usage: %s [options] <command> [arguments]\n\n", progname);
     printf("Commands:\n");
     printf("  status                         Show daemon health, permissions, and active app\n");
-    printf("  list, inventory                List connected devices and properties\n");
+    printf("  list, devices, inventory       List connected devices and properties\n");
+    printf("  scroll [get|invert|res|smooth] Inspect or configure mouse scroll & wheel settings\n");
     printf("  dpi get                        Get current sensor DPI\n");
     printf("  dpi set <value> [dev]          Set active sensor DPI in real time\n");
     printf("  smartshift get                 Get SmartShift mode and threshold\n");
     printf("  smartshift set <mode> <thresh> Configure SmartShift wheel (ratchet/freespin/auto)\n");
+    printf("  actions [filter]               List all 53 supported button & gesture actions\n");
+    printf("  options, schema                Display reference manual of all TOML settings & values\n");
+    printf("  config [show|path|get|set]     Inspect, display, or modify config.toml settings\n");
     printf("  reload                         Hot-reload config.toml immediately\n");
     printf("  monitor                        Stream real-time intercepted events and gestures\n");
     printf("  setup                          Launch interactive ANSI terminal setup wizard\n");
     printf("  autostart [status|enable|disable] Configure automatic login autostart\n\n");
+    printf("Examples:\n");
+    printf("  %s scroll invert toggle         # Invert/un-invert mouse wheel scroll direction\n", progname);
+    printf("  %s scroll resolution high      # Enable fine-grained hi-res scrolling\n", progname);
+    printf("  %s actions                     # View all 53 available actions with descriptions\n", progname);
+    printf("  %s options                     # View full TOML configuration options guide\n", progname);
+    printf("  %s config set dpi 1600         # Update DPI setting in config.toml\n\n", progname);
     printf("Options:\n");
     printf("  --json                         Output in machine-readable JSON format\n");
     printf("  -s, --socket <path>            Specify custom UNIX domain socket path\n");
@@ -739,12 +1284,20 @@ int main(int argc, char **argv)
 
     if (strcmp(cmd, "status") == 0) {
         return cmd_status();
-    } else if (strcmp(cmd, "list") == 0 || strcmp(cmd, "inventory") == 0) {
+    } else if (strcmp(cmd, "list") == 0 || strcmp(cmd, "inventory") == 0 || strcmp(cmd, "devices") == 0) {
         return cmd_list();
+    } else if (strcmp(cmd, "scroll") == 0 || strcmp(cmd, "wheel") == 0) {
+        return cmd_scroll(sub_argc, sub_argv);
     } else if (strcmp(cmd, "dpi") == 0) {
         return cmd_dpi(sub_argc, sub_argv);
     } else if (strcmp(cmd, "smartshift") == 0) {
         return cmd_smartshift(sub_argc, sub_argv);
+    } else if (strcmp(cmd, "actions") == 0) {
+        return cmd_actions(sub_argc, sub_argv);
+    } else if (strcmp(cmd, "options") == 0 || strcmp(cmd, "schema") == 0) {
+        return cmd_options();
+    } else if (strcmp(cmd, "config") == 0) {
+        return cmd_config(sub_argc, sub_argv);
     } else if (strcmp(cmd, "reload") == 0) {
         return cmd_reload();
     } else if (strcmp(cmd, "monitor") == 0) {

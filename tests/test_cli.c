@@ -210,6 +210,51 @@ static void test_cli_subcommands(void)
     ret = system(cmd);
     assert(ret == 0);
 
+    /* 11. openlogictl devices (alias for list) */
+    snprintf(cmd, sizeof(cmd), "%s -s %s devices > /dev/null 2>&1", cli, sock_path);
+    ret = system(cmd);
+    assert(ret == 0);
+
+    /* 12. openlogictl actions & filter */
+    snprintf(cmd, sizeof(cmd), "%s actions > /dev/null 2>&1", cli);
+    ret = system(cmd);
+    assert(ret == 0);
+
+    snprintf(cmd, sizeof(cmd), "%s actions scroll > /dev/null 2>&1", cli);
+    ret = system(cmd);
+    assert(ret == 0);
+
+    snprintf(cmd, sizeof(cmd), "%s --json actions > /dev/null 2>&1", cli);
+    ret = system(cmd);
+    assert(ret == 0);
+
+    /* 13. openlogictl options & schema */
+    snprintf(cmd, sizeof(cmd), "%s options > /dev/null 2>&1", cli);
+    ret = system(cmd);
+    assert(ret == 0);
+
+    snprintf(cmd, sizeof(cmd), "%s schema > /dev/null 2>&1", cli);
+    ret = system(cmd);
+    assert(ret == 0);
+
+    snprintf(cmd, sizeof(cmd), "%s --json options > /dev/null 2>&1", cli);
+    ret = system(cmd);
+    assert(ret == 0);
+
+    /* 14. openlogictl scroll get */
+    snprintf(cmd, sizeof(cmd), "%s scroll get > /dev/null 2>&1", cli);
+    ret = system(cmd);
+    assert(ret == 0);
+
+    snprintf(cmd, sizeof(cmd), "%s --json scroll get > /dev/null 2>&1", cli);
+    ret = system(cmd);
+    assert(ret == 0);
+
+    /* 15. openlogictl config path */
+    snprintf(cmd, sizeof(cmd), "%s config path > /dev/null 2>&1", cli);
+    ret = system(cmd);
+    assert(ret == 0);
+
     ipc_server_stop();
     TEST_PASS("test_cli_subcommands");
 }
