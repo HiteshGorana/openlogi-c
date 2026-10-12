@@ -1,0 +1,15 @@
+[Unit]
+Description=OpenLogi Pure C Hardware Daemon
+Documentation=https://github.com/hitesh/OpenLogi
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/openlogid
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

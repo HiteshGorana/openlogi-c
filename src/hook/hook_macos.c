@@ -1,0 +1,215 @@
+/**
+ * @file hook_macos.c
+ * @brief macOS CGEventTap implementation for OpenLogi input hook.
+ */
+
+#ifdef __APPLE__
+
+#include "hook.h"
+
+#include <ApplicationServices/ApplicationServices.h>
+#include <CoreFoundation/CoreFoundation.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <stdbool.h>
+
+static hook_event_callback_t g_callback = NULL;
+static void *g_user_data = NULL;
+
+static CFMachPortRef g_tap_port = NULL;
+static CFRunLoopSourceRef g_run_loop_source = NULL;
+static CFRunLoopRef g_run_loop = NULL;
+static pthread_t g_tap_thread;
+static volatile bool g_is_running = false;
+static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+
+bool hook_check_permission(void)
+{
+    return AXIsProcessTrusted();
+}
+
+static CGEventRef event_tap_callback(
+    CGEventTapProxy proxy,
+    CGEventType type,
+    CGEventRef event,
+    void *refcon)
+{
+    (void)proxy;
+    (void)refcon;
+
+    /* Re-arm tap automatically if macOS temporarily disabled it due to timeout */
+    if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+        if (g_tap_port) {
+            CGEventTapEnable(g_tap_port, true);
+        }
+        return event;
+    }
+
+    if (!g_callback || !g_is_running) {
+        return event;
+    }
+
+    hook_event_t ev;
+    memset(&ev, 0, sizeof(ev));
+
+    CGPoint loc = CGEventGetLocation(event);
+    ev.x = loc.x;
+    ev.y = loc.y;
+
+    if (type == kCGEventOtherMouseDown) {
+        int64_t btn = CGEventGetIntegerValueField(event, kCGMouseEventButtonNumber);
+        ev.type = HOOK_EVENT_BUTTON_DOWN;
+        ev.button_number = (uint32_t)(btn + 1); /* Map to 1-based button index */
+
+        if (g_callback(&ev, g_user_data) == HOOK_ACTION_SUPPRESS) {
+            return NULL; /* Swallow event from OS */
+        }
+    }
+    else if (type == kCGEventOtherMouseUp) {
+        int64_t btn = CGEventGetIntegerValueField(event, kCGMouseEventButtonNumber);
+        ev.type = HOOK_EVENT_BUTTON_UP;
+        ev.button_number = (uint32_t)(btn + 1);
+
+        if (g_callback(&ev, g_user_data) == HOOK_ACTION_SUPPRESS) {
+            return NULL; /* Swallow event from OS */
+        }
+    }
+    else if (type == kCGEventOtherMouseDragged) {
+        int64_t btn = CGEventGetIntegerValueField(event, kCGMouseEventButtonNumber);
+        ev.type = HOOK_EVENT_MOUSE_DRAG;
+        ev.button_number = (uint32_t)(btn + 1);
+
+        if (g_callback(&ev, g_user_data) == HOOK_ACTION_SUPPRESS) {
+            return NULL;
+        }
+    }
+    else if (type == kCGEventScrollWheel) {
+        ev.type = HOOK_EVENT_SCROLL;
+        ev.scroll_dy = CGEventGetDoubleValueField(event, kCGScrollWheelEventDeltaAxis1);
+        ev.scroll_dx = CGEventGetDoubleValueField(event, kCGScrollWheelEventDeltaAxis2);
+
+        if (g_callback(&ev, g_user_data) == HOOK_ACTION_SUPPRESS) {
+            return NULL;
+        }
+    }
+
+    return event; /* Zero-overhead pass-through */
+}
+
+static void *tap_thread_main(void *arg)
+{
+    (void)arg;
+
+    pthread_mutex_lock(&g_lock);
+    g_run_loop = CFRunLoopGetCurrent();
+    CFRunLoopAddSource(g_run_loop, g_run_loop_source, kCFRunLoopCommonModes);
+    CGEventTapEnable(g_tap_port, true);
+    g_is_running = true;
+    pthread_mutex_unlock(&g_lock);
+
+    /* Run event pump until stopped */
+    CFRunLoopRun();
+
+    pthread_mutex_lock(&g_lock);
+    g_is_running = false;
+    pthread_mutex_unlock(&g_lock);
+
+    return NULL;
+}
+
+bool hook_init(hook_event_callback_t callback, void *user_data)
+{
+    g_callback = callback;
+    g_user_data = user_data;
+    return true;
+}
+
+bool hook_start(void)
+{
+    pthread_mutex_lock(&g_lock);
+    if (g_is_running || g_tap_port) {
+        pthread_mutex_unlock(&g_lock);
+        return true;
+    }
+
+    /* Trapped events: middle, back, forward, other buttons, drag, and scroll */
+    CGEventMask mask = (1 << kCGEventOtherMouseDown) |
+                       (1 << kCGEventOtherMouseUp)   |
+                       (1 << kCGEventOtherMouseDragged) |
+                       (1 << kCGEventScrollWheel);
+
+    g_tap_port = CGEventTapCreate(
+        kCGSessionEventTap,
+        kCGHeadInsertEventTap,
+        kCGEventTapOptionDefault,
+        mask,
+        event_tap_callback,
+        NULL
+    );
+
+    if (!g_tap_port) {
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
+
+    g_run_loop_source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, g_tap_port, 0);
+    if (!g_run_loop_source) {
+        CFRelease(g_tap_port);
+        g_tap_port = NULL;
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
+
+    if (pthread_create(&g_tap_thread, NULL, tap_thread_main, NULL) != 0) {
+        CFRelease(g_run_loop_source);
+        g_run_loop_source = NULL;
+        CFRelease(g_tap_port);
+        g_tap_port = NULL;
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
+
+    pthread_mutex_unlock(&g_lock);
+    return true;
+}
+
+void hook_stop(void)
+{
+    pthread_mutex_lock(&g_lock);
+    if (!g_tap_port) {
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
+
+    if (g_tap_port) {
+        CGEventTapEnable(g_tap_port, false);
+    }
+
+    if (g_run_loop) {
+        CFRunLoopStop(g_run_loop);
+    }
+    pthread_mutex_unlock(&g_lock);
+
+    /* Wait for thread to exit */
+    pthread_join(g_tap_thread, NULL);
+
+    pthread_mutex_lock(&g_lock);
+    if (g_run_loop_source) {
+        CFRelease(g_run_loop_source);
+        g_run_loop_source = NULL;
+    }
+    if (g_tap_port) {
+        CFRelease(g_tap_port);
+        g_tap_port = NULL;
+    }
+    g_run_loop = NULL;
+    g_is_running = false;
+    pthread_mutex_unlock(&g_lock);
+}
+
+bool hook_is_running(void)
+{
+    return g_is_running;
+}
+
+#endif /* __APPLE__ */
