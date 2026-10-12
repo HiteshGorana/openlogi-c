@@ -30,25 +30,49 @@
 
 typedef int (*CoreDockSendNotificationFn)(CFStringRef, int);
 static CoreDockSendNotificationFn g_core_dock_send = NULL;
+static void *g_app_services_lib = NULL;
+
+static CoreDockSendNotificationFn resolve_core_dock_send(void)
+{
+    if (g_core_dock_send) return g_core_dock_send;
+
+    if (!g_app_services_lib) {
+        g_app_services_lib = dlopen("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices", RTLD_LAZY);
+    }
+    if (g_app_services_lib) {
+        g_core_dock_send = (CoreDockSendNotificationFn)dlsym(g_app_services_lib, "CoreDockSendNotification");
+    }
+    if (!g_core_dock_send) {
+        g_core_dock_send = (CoreDockSendNotificationFn)dlsym(RTLD_DEFAULT, "CoreDockSendNotification");
+    }
+    return g_core_dock_send;
+}
 
 bool inject_init(void)
 {
-    g_core_dock_send = (CoreDockSendNotificationFn)dlsym(RTLD_DEFAULT, "CoreDockSendNotification");
+    resolve_core_dock_send();
     return true;
 }
 
 static void send_dock_notification(const char *name)
 {
-    if (!g_core_dock_send) {
-        g_core_dock_send = (CoreDockSendNotificationFn)dlsym(RTLD_DEFAULT, "CoreDockSendNotification");
-    }
-
-    if (g_core_dock_send) {
+    CoreDockSendNotificationFn fn = resolve_core_dock_send();
+    if (fn) {
         CFStringRef str = CFStringCreateWithCString(kCFAllocatorDefault, name, kCFStringEncodingUTF8);
         if (str) {
-            g_core_dock_send(str, 0);
+            int ret = fn(str, 0);
             CFRelease(str);
+            if (ret == 0) return;
         }
+    }
+
+    /* Fallback to keyboard shortcuts if CoreDock unavailable or returned error */
+    if (strcmp(name, "com.apple.expose.awake") == 0) {
+        inject_key_combo(0x7E, MOD_CTRL); /* Ctrl + Up Arrow */
+    } else if (strcmp(name, "com.apple.expose.front.awake") == 0) {
+        inject_key_combo(0x7D, MOD_CTRL); /* Ctrl + Down Arrow */
+    } else if (strcmp(name, "com.apple.showdesktop.awake") == 0) {
+        inject_key_combo(0x67, 0);        /* F11 keycode */
     }
 }
 
