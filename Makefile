@@ -28,7 +28,14 @@
 CC ?= clang
 CFLAGS ?= -std=c99 -Wall -Wextra -Werror -pedantic -O2 -g -Iinclude -Ivendor/yyjson -Ivendor/tomlc99
 
-PREFIX ?= /usr/local
+# Auto-select prefix: use /usr/local if writable (e.g. under sudo), else ~/.local
+ifeq ($(shell test -w /usr/local/bin 2>/dev/null && echo 1 || echo 0),1)
+    DEFAULT_PREFIX ?= /usr/local
+else
+    DEFAULT_PREFIX ?= $(HOME)/.local
+endif
+
+PREFIX ?= $(DEFAULT_PREFIX)
 BINDIR ?= $(PREFIX)/bin
 
 BUILD_DIR ?= build
@@ -212,8 +219,8 @@ strip: all
 	strip $(TOOLS)
 	@ls -lh $(TOOLS)
 
-install: all
-	@install -d $(DESTDIR)$(BINDIR)
+install: tools
+	@mkdir -p $(DESTDIR)$(BINDIR)
 	@install -m 755 $(BIN_DIR)/openlogid $(DESTDIR)$(BINDIR)/openlogid
 	@install -m 755 $(BIN_DIR)/openlogictl $(DESTDIR)$(BINDIR)/openlogictl
 	@install -m 755 $(BIN_DIR)/openlogi_discover $(DESTDIR)$(BINDIR)/openlogi_discover
