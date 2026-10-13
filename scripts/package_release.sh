@@ -9,7 +9,7 @@ for tool in openlogid openlogictl openlogi_discover; do
     # strip changes the Mach-O contents, so sign the final binaries afterwards.
     codesign --force --sign - --identifier "io.github.openlogi.$tool" "bin/$tool"
     codesign --verify --strict "bin/$tool"
-    lipo -verify_arch "$architecture" "bin/$tool"
+    xcrun lipo "bin/$tool" -verify_arch "$architecture"
 done
 bin/openlogid --help >/dev/null
 bin/openlogictl --help >/dev/null

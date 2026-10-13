@@ -135,7 +135,7 @@ export PATH="$HOME/.local/bin:$PATH"
 You can select a specific release or a different install directory:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/HiteshGorana/openlogi-c/main/install.sh | sh -s -- --version v0.1.0
+curl -fsSL https://raw.githubusercontent.com/HiteshGorana/openlogi-c/main/install.sh | sh -s -- --version v0.1.1
 curl -fsSL https://raw.githubusercontent.com/HiteshGorana/openlogi-c/main/install.sh | sh -s -- --prefix "$HOME/tools/openlogi"
 ```
 
@@ -332,11 +332,11 @@ sh tests/test_install.sh
 
 The [macOS CI workflow](.github/workflows/macos.yml) runs on pushes, pull requests, and manual dispatches. It uses GitHub's [`macos-latest` runner](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) and Clang to build all three tools and the test executables, run the suite, and rebuild/run it with AddressSanitizer and UndefinedBehaviorSanitizer. Hardware control and macOS permission behavior require verification on a Mac with a connected device.
 
-The [release workflow](.github/workflows/release.yml) runs when a version tag such as `v0.1.0` is pushed. It tests both architectures, rebuilds clean release binaries for macOS 13+, signs and packages them, and publishes the archives, installer, and `SHA256SUMS` in a GitHub Release. Both builds must pass before publication. To publish a new version after updating and testing the code:
+The [release workflow](.github/workflows/release.yml) runs when a version tag such as `v0.1.1` is pushed. It tests both architectures, rebuilds clean release binaries for macOS 13+, signs and packages them, and publishes the archives, installer, and `SHA256SUMS` in a GitHub Release. Both builds must pass before publication. To publish a new version after updating and testing the code, choose an unused version tag, for example:
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.2
+git push origin v0.1.2
 ```
 
 Use a new version tag for each release. The tag determines the version reported by its binaries.
