@@ -14,6 +14,9 @@
 #include <assert.h>
 #include <unistd.h>
 #include <stdbool.h>
+#include <errno.h>
+#include <pthread.h>
+#include <time.h>
 
 #define TEST_PASS(name) (void)(name)
 
@@ -177,16 +180,38 @@ static void test_config_profile_resolution(void)
     TEST_PASS("test_config_profile_resolution");
 }
 
-static volatile bool g_watch_reloaded = false;
+static pthread_mutex_t g_callback_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_callback_ready = PTHREAD_COND_INITIALIZER;
+static bool g_watch_reloaded = false;
 static char g_reloaded_path[512] = {0};
+
+static bool wait_for_callback(bool *notified)
+{
+    struct timespec deadline;
+    assert(clock_gettime(CLOCK_REALTIME, &deadline) == 0);
+    deadline.tv_sec += 5;
+
+    pthread_mutex_lock(&g_callback_lock);
+    int result = 0;
+    while (!*notified && result != ETIMEDOUT) {
+        result = pthread_cond_timedwait(&g_callback_ready, &g_callback_lock, &deadline);
+        assert(result == 0 || result == ETIMEDOUT);
+    }
+    bool observed = *notified;
+    pthread_mutex_unlock(&g_callback_lock);
+    return observed;
+}
 
 static void on_test_config_reload(const char *path, void *user_data)
 {
     (void)user_data;
-    g_watch_reloaded = true;
+    pthread_mutex_lock(&g_callback_lock);
     if (path) {
-        strncpy(g_reloaded_path, path, sizeof(g_reloaded_path) - 1);
+        snprintf(g_reloaded_path, sizeof(g_reloaded_path), "%s", path);
     }
+    g_watch_reloaded = true;
+    pthread_cond_signal(&g_callback_ready);
+    pthread_mutex_unlock(&g_callback_lock);
 }
 
 static void test_config_file_watcher(void)
@@ -199,8 +224,10 @@ static void test_config_file_watcher(void)
     fputs("schema_version = 7\n", fp);
     fclose(fp);
 
+    pthread_mutex_lock(&g_callback_lock);
     g_watch_reloaded = false;
     memset(g_reloaded_path, 0, sizeof(g_reloaded_path));
+    pthread_mutex_unlock(&g_callback_lock);
 
     /* Start watcher */
     bool started = config_watch_start(test_path, on_test_config_reload, NULL);
@@ -216,14 +243,11 @@ static void test_config_file_watcher(void)
     fputs("selected_device = \"test:123\"\n", fp);
     fclose(fp);
 
-    /* Wait for notification */
-    for (int i = 0; i < 20; i++) {
-        if (g_watch_reloaded) break;
-        usleep(50000); /* 50ms */
-    }
-
-    assert(g_watch_reloaded && "Watcher should trigger on file change");
+    /* The notification and path are published together under the callback lock. */
+    assert(wait_for_callback(&g_watch_reloaded) && "Watcher should trigger on file change");
+    pthread_mutex_lock(&g_callback_lock);
     assert(strcmp(g_reloaded_path, test_path) == 0);
+    pthread_mutex_unlock(&g_callback_lock);
 
     /* Stop watcher */
     config_watch_stop();
@@ -233,10 +257,13 @@ static void test_config_file_watcher(void)
     TEST_PASS("test_config_file_watcher");
 }
 
-static volatile bool g_app_cb_fired = false;
+static bool g_app_cb_fired = false;
 static void test_app_cb(const char *id, void *ud) {
     (void)id; (void)ud;
+    pthread_mutex_lock(&g_callback_lock);
     g_app_cb_fired = true;
+    pthread_cond_signal(&g_callback_ready);
+    pthread_mutex_unlock(&g_callback_lock);
 }
 
 static void test_app_watcher(void)
@@ -254,14 +281,15 @@ static void test_app_watcher(void)
     assert(!started && "app_watch_start with NULL callback should fail");
 
     /* Start with real callback */
+    pthread_mutex_lock(&g_callback_lock);
     g_app_cb_fired = false;
+    pthread_mutex_unlock(&g_callback_lock);
     started = app_watch_start(test_app_cb, NULL);
     assert(started);
     assert(app_watch_is_running());
 
     /* App watcher fires immediately with current app */
-    usleep(150000);
-    assert(g_app_cb_fired && "app_watch callback should fire with initial app");
+    assert(wait_for_callback(&g_app_cb_fired) && "app_watch callback should fire with initial app");
 
     app_watch_stop();
     assert(!app_watch_is_running());
