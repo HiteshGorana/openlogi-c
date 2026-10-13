@@ -63,8 +63,10 @@ openlogi-c/
 │   ├── macos/                  # io.github.openlogi.agent.plist (launchd User Agent)
 │   └── linux/                  # openlogid.service (systemd user unit)
 │
-├── .github/workflows/          # macOS build, tests, and sanitizer CI
-└── tests/                      # 19 unit and regression suites / 97 test cases
+├── install.sh                  # Install or update prebuilt macOS binaries
+├── scripts/                    # Release packaging
+├── .github/workflows/          # macOS CI and version-tagged releases
+└── tests/                      # 19 C test suites / 98 cases, plus installer checks
 ```
 
 ---
@@ -106,6 +108,41 @@ openlogi-c/
 
 ## 4. Building & Installation
 
+### Install or Update with curl
+
+On **macOS 13 or newer**, install the latest release for Apple Silicon or Intel:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/HiteshGorana/openlogi-c/main/install.sh | sh
+```
+
+**Run the same command to update.** The installer verifies the release's SHA-256 checksum and installs the three tools in `~/.local/bin`. It restarts an active installation and retains your TOML configuration. A failed update restores the previous binaries. Xcode, a compiler, and sudo are not needed.
+
+Grant `~/.local/bin/openlogid` **Accessibility** and **Input Monitoring** access in **System Settings → Privacy & Security**. To select the binary, use the **+** button, press **Cmd+Shift+G**, and enter `~/.local/bin/openlogid`. Then run:
+
+```sh
+~/.local/bin/openlogictl autostart enable
+~/.local/bin/openlogictl setup
+~/.local/bin/openlogictl status
+```
+
+To use the commands without their full paths, add this to your shell profile:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+You can select a specific release or a different install directory:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/HiteshGorana/openlogi-c/main/install.sh | sh -s -- --version v0.1.0
+curl -fsSL https://raw.githubusercontent.com/HiteshGorana/openlogi-c/main/install.sh | sh -s -- --prefix "$HOME/tools/openlogi"
+```
+
+For updates to a custom prefix, use that same `--prefix`. Release downloads are also available on the [GitHub Releases page](https://github.com/HiteshGorana/openlogi-c/releases). macOS may require you to grant permissions again after an update; release binaries use ad-hoc signing.
+
+### Build from Source
+
 ### Prerequisites
 
 - macOS with Xcode Command Line Tools (`clang` and `make`). Install them with `xcode-select --install` if needed.
@@ -143,11 +180,14 @@ make all
 # Build only the three runtime tools
 make tools
 
-# Run all 19 suites (97 test cases)
+# Run all 19 C suites (98 test cases)
 make test
 
 # Show individual test cases and timing
 make test VERBOSE=1
+
+# Verify installation, updates, rollback, and download validation offline
+sh tests/test_install.sh
 
 # Run AddressSanitizer & UndefinedBehaviorSanitizer verification
 make asan
@@ -256,7 +296,15 @@ For a specific mouse, replace `default` with a quoted device key from `openlogic
 
 ## 7. Autostart & Service Management
 
-To have `openlogid` start automatically when you log in on macOS, run these commands from the repository directory after building:
+To start at login after using the installer:
+
+```sh
+~/.local/bin/openlogictl autostart enable
+~/.local/bin/openlogictl autostart status
+~/.local/bin/openlogictl autostart disable
+```
+
+When building from source, use the CLI in the repository:
 
 ```bash
 ./bin/openlogictl autostart enable
@@ -268,19 +316,29 @@ To have `openlogid` start automatically when you log in on macOS, run these comm
 ./bin/openlogictl autostart disable
 ```
 
-The CLI generates `~/Library/LaunchAgents/io.github.openlogi.agent.plist` and loads it with `launchctl`. It uses `/usr/local/bin/openlogid` when present, otherwise the built `bin/openlogid` in the current repository. Keep the selected binary at that path. Service logs are written to `/tmp/openlogid.stdout.log` and `/tmp/openlogid.stderr.log`.
+The CLI generates `~/Library/LaunchAgents/io.github.openlogi.agent.plist` and loads it with `launchctl`. It finds `openlogid` alongside the running `openlogictl`, including installations in custom directories. Keep the tools together at that path. Service logs are written to `/tmp/openlogid.stdout.log` and `/tmp/openlogid.stderr.log`.
 
 ---
 
 ## 8. Tests & Continuous Integration
 
-The suite contains **97 test cases across 19 suites**, covering HID++ framing and feature probing, diversion, gestures, configuration, IPC, CLI commands, single-instance locking, button timing, scrolling, wake/reconnect behavior, DPI cycling, session recovery, and actions/workflows.
+The C suite contains **98 test cases across 19 suites**, covering HID++ framing and feature probing, diversion, gestures, configuration, IPC, CLI commands and installed paths, single-instance locking, button timing, scrolling, wake/reconnect behavior, DPI cycling, session recovery, and actions/workflows. The offline installer checks cover architecture selection, updates, service restarts, rollback, checksum failures, and invalid archives.
 
 ```bash
 make test
 make asan
+sh tests/test_install.sh
 ```
 
 The [macOS CI workflow](.github/workflows/macos.yml) runs on pushes, pull requests, and manual dispatches. It uses GitHub's [`macos-latest` runner](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) and Clang to build all three tools and the test executables, run the suite, and rebuild/run it with AddressSanitizer and UndefinedBehaviorSanitizer. Hardware control and macOS permission behavior require verification on a Mac with a connected device.
+
+The [release workflow](.github/workflows/release.yml) runs when a version tag such as `v0.1.0` is pushed. It tests both architectures, rebuilds clean release binaries for macOS 13+, signs and packages them, and publishes the archives, installer, and `SHA256SUMS` in a GitHub Release. Both builds must pass before publication. To publish a new version after updating and testing the code:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Use a new version tag for each release. The tag determines the version reported by its binaries.
 
 See [AGENTS.md](AGENTS.md) for the architecture, test suite map, and development conventions.

@@ -28,6 +28,10 @@
 CC ?= clang
 CFLAGS ?= -std=c99 -Wall -Wextra -Werror -pedantic -O2 -g -Iinclude -Ivendor/yyjson -Ivendor/tomlc99
 
+ifneq ($(OPENLOGI_VERSION),)
+    CPPFLAGS += -DOPENLOGI_AGENT_VERSION=\"$(OPENLOGI_VERSION)-c\"
+endif
+
 # Auto-select prefix: use /usr/local if writable (e.g. under sudo), else ~/.local
 ifeq ($(shell test -w /usr/local/bin 2>/dev/null && echo 1 || echo 0),1)
     DEFAULT_PREFIX ?= /usr/local
@@ -48,7 +52,7 @@ SRC_CORE = src/core/signals.c src/core/gesture.c src/core/config.c src/core/conf
            src/core/single_instance.c src/core/button_runtime.c src/core/scroll_math.c \
            src/core/device_reapply.c src/core/dpi_cycle.c src/core/armed_session.c \
            src/core/scroll_pipeline.c src/core/capture_plan.c src/core/spaces_shortcuts.c \
-           src/core/hires_wheel.c
+           src/core/hires_wheel.c src/core/tool_path.c
 SRC_IPC = src/ipc/ipc_server.c src/ipc/ipc_client.c
 SRC_PLATFORM =
 SRC_HOOK =
@@ -60,6 +64,9 @@ ifeq ($(UNAME_S),Darwin)
     SRC_HOOK += src/hook/hook_macos.c
     SRC_INJECT += src/inject/inject_macos.c
     LDFLAGS += -framework IOKit -framework CoreFoundation -framework ApplicationServices -framework AppKit
+    ifeq ($(RELEASE),1)
+        LDFLAGS += -Wl,-dead_strip
+    endif
 endif
 
 VENDOR_SRC = vendor/yyjson/yyjson.c vendor/tomlc99/toml.c
@@ -115,100 +122,100 @@ dirs:
 
 $(BUILD_DIR)/src/%.o: src/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/vendor/%.o: vendor/%.c
 	@mkdir -p $(dir $@)
 	# Compile vendor sources with relaxed warnings
-	$(CC) -std=c99 -O2 -Ivendor/yyjson -Ivendor/tomlc99 -c $< -o $@
+	$(CC) $(CPPFLAGS) -std=c99 -O2 -Ivendor/yyjson -Ivendor/tomlc99 -c $< -o $@
 
 $(BIN_DIR)/test_hidpp_packet: tests/test_hidpp_packet.c $(BUILD_DIR)/src/hid/hidpp_packet.o
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $< $(BUILD_DIR)/src/hid/hidpp_packet.o $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(BUILD_DIR)/src/hid/hidpp_packet.o $(LDFLAGS) -o $@
 
 $(BIN_DIR)/test_device_probe: tests/test_device_probe.c $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
 $(BIN_DIR)/test_diversion_and_hook: tests/test_diversion_and_hook.c $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
 $(BIN_DIR)/test_gesture_and_inject: tests/test_gesture_and_inject.c $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
 $(BIN_DIR)/test_config: tests/test_config.c $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
 $(BIN_DIR)/test_ipc_server: tests/test_ipc_server.c $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
 $(BIN_DIR)/test_cli: tests/test_cli.c $(CORE_OBJS) $(BIN_DIR)/openlogictl
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
 $(BIN_DIR)/test_single_instance: tests/test_single_instance.c $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
 $(BIN_DIR)/test_button_runtime: tests/test_button_runtime.c $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
 $(BIN_DIR)/test_wheel_math: tests/test_wheel_math.c $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
 $(BIN_DIR)/test_reapply_wake: tests/test_reapply_wake.c $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
 $(BIN_DIR)/test_dpi_cycle: tests/test_dpi_cycle.c $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
 $(BIN_DIR)/test_armed_session: tests/test_armed_session.c $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
 $(BIN_DIR)/test_gesture_accumulator_edge: tests/test_gesture_accumulator_edge.c $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
 $(BIN_DIR)/test_scroll_pipeline: tests/test_scroll_pipeline.c $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
 $(BIN_DIR)/test_capture_plan: tests/test_capture_plan.c $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
 $(BIN_DIR)/test_spaces_shortcuts: tests/test_spaces_shortcuts.c $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
 $(BIN_DIR)/test_hires_wheel_curve: tests/test_hires_wheel_curve.c $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
 $(BIN_DIR)/test_actions: tests/test_actions.c $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
 $(BIN_DIR)/openlogi_discover: src/cli/openlogi_discover.c $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
 $(BIN_DIR)/openlogid: src/daemon/main.c $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
 $(BIN_DIR)/openlogictl: src/cli/openlogictl.c $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
 test: dirs $(TEST_BINS) $(TOOLS)
 	@./tests/run_tests.sh $(VERBOSE)
@@ -256,7 +263,7 @@ help info:
 	@echo "  ------------------  ----------------------------------------------------------"
 	@echo "  make [all]          Build runtime tools, core libraries, and 19 test suites"
 	@echo "  make tools          Build only runtime binaries (openlogid, openlogictl, etc.)"
-	@echo "  make test           Run all 19 test suites (97 test cases) via visual runner"
+	@echo "  make test           Run all 19 test suites (98 test cases) via visual runner"
 	@echo "  make test VERBOSE=1 Run tests with microsecond-level test case timing"
 	@echo "  make asan           Run full test suite under ASan & UBSan (0 leaks, 0 errors)"
 	@echo "  make strip          Strip release symbols and show minimal binary sizes"

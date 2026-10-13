@@ -69,7 +69,7 @@ openlogi-c/
 │   ├── macos/                    # io.github.openlogi.agent.plist (launchd User Agent)
 │   └── linux/                    # openlogid.service (systemd user unit)
 │
-└── tests/                        # Automated Unit, Regression, & Mock Test Suites (19 suites / 97 tests)
+└── tests/                        # Automated Unit, Regression, & Mock Test Suites (19 suites / 98 tests)
     └── run_tests.sh              # Visual terminal test runner with ASan/UBSan integration
 ```
 
@@ -252,7 +252,7 @@ Hot-reloads `~/.config/openlogi/config.toml` on demand.
 
 ---
 
-## 7. Automated Test Suite (19 Suites / 97 Tests)
+## 7. Automated Test Suite (19 Suites / 98 Tests)
 
 The test harness provides comprehensive coverage with 0 external dependencies:
 
@@ -277,7 +277,7 @@ make asan
 | **04** | `test_gesture_and_inject.c` | 6 | Swipe accumulator, 4-way gesture commit, native CGEvent injection |
 | **05** | `test_config.c` | 5 | Schema v7 TOML parsing, kqueue file watcher, app watcher |
 | **06** | `test_ipc_server.c` | 5 | Non-blocking UNIX socket, JSON-RPC dispatch, concurrent clients |
-| **07** | `test_cli.c` | 3 | openlogictl dispatch, launchd/systemd autostart management |
+| **07** | `test_cli.c` | 4 | openlogictl dispatch, installed executable path resolution, autostart management |
 | **08** | `test_single_instance.c` | 2 | POSIX flock file lock, duplicate daemon prevention, stale PID purge |
 | **09** | `test_button_runtime.c` | 7 | Press state machine, short click vs long press, hold timeouts |
 | **10** | `test_wheel_math.c` | 5 | Thumbwheel scaling, inverted coordinates, discrete ratchet units |

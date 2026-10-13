@@ -7,12 +7,51 @@
 #include "ipc_server.h"
 #include "yyjson.h"
 #include "test_framework.h"
+#include "tool_path.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 #include <unistd.h>
+#include <sys/stat.h>
+
+static void test_installed_daemon_path_resolution(void)
+{
+    char fixture[] = "/tmp/openlogi-tools.XXXXXX";
+    assert(mkdtemp(fixture) != NULL);
+    char resolved[4096];
+    assert(realpath(fixture, resolved) != NULL);
+    char cli[512], daemon[512], link[512], search_path[1024], output[4096];
+    snprintf(cli, sizeof(cli), "%s/openlogictl", fixture);
+    snprintf(daemon, sizeof(daemon), "%s/openlogid", fixture);
+    snprintf(link, sizeof(link), "%s/control link", fixture);
+    FILE *file = fopen(cli, "w");
+    assert(file != NULL); fclose(file);
+    file = fopen(daemon, "w");
+    assert(file != NULL); fclose(file);
+    assert(chmod(cli, 0755) == 0 && chmod(daemon, 0755) == 0);
+    assert(symlink(cli, link) == 0);
+    snprintf(search_path, sizeof(search_path), "/nonexistent:%s", fixture);
+
+    assert(tool_sibling_path(cli, NULL, "openlogid", output, sizeof(output)));
+    assert(strncmp(output, resolved, strlen(resolved)) == 0);
+    char expected[4096];
+    assert(realpath(daemon, expected) != NULL);
+    assert(strcmp(output, expected) == 0);
+    assert(tool_sibling_path("openlogictl", search_path, "openlogid", output, sizeof(output)));
+    assert(strcmp(output, expected) == 0);
+    assert(tool_sibling_path(link, NULL, "openlogid", output, sizeof(output)));
+    assert(strcmp(output, expected) == 0);
+    assert(!tool_sibling_path(cli, NULL, "openlogid", output, 2));
+    assert(output[0] == '\0');
+    assert(!tool_sibling_path("openlogictl", "/nonexistent", "openlogid", output, sizeof(output)));
+    assert(chmod(daemon, 0644) == 0);
+    assert(!tool_sibling_path(cli, NULL, "openlogid", output, sizeof(output)));
+    assert(unlink(daemon) == 0);
+    assert(!tool_sibling_path(cli, NULL, "openlogid", output, sizeof(output)));
+    assert(unlink(link) == 0 && unlink(cli) == 0 && rmdir(fixture) == 0);
+}
 
 #define TEST_PASS(name) (void)(name)
 
@@ -266,6 +305,7 @@ int main(void)
     TEST_CASE_RUN(g_suite, test_ipc_client_unreachable);
     TEST_CASE_RUN(g_suite, test_ipc_client_methods);
     TEST_CASE_RUN(g_suite, test_cli_subcommands);
+    TEST_CASE_RUN(g_suite, test_installed_daemon_path_resolution);
 
     test_suite_end(&g_suite);
     return (g_suite.failed == 0) ? 0 : 1;

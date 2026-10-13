@@ -18,7 +18,9 @@ extern "C" {
 #endif
 
 #define OPENLOGI_PROTOCOL_VERSION "2.0"
+#ifndef OPENLOGI_AGENT_VERSION
 #define OPENLOGI_AGENT_VERSION    "0.1.0-c"
+#endif
 #define OPENLOGI_MAX_CLIENTS      16
 
 typedef struct {

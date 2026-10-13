@@ -44,7 +44,7 @@ TOTAL_TESTS=0
 
 printf "\n%b================================================================================%b\n" "$C_CYAN" "$C_RESET"
 printf "%b                     OpenLogi Pure C Test Suite Runner%b\n" "$C_BOLD" "$C_RESET"
-printf "          %b19 Test Suites  •  97 Test Cases  •  AddressSanitizer Clean%b\n" "$C_GRAY" "$C_RESET"
+printf "          %b19 Test Suites  •  98 Test Cases  •  AddressSanitizer Clean%b\n" "$C_GRAY" "$C_RESET"
 printf "%b================================================================================%b\n\n" "$C_CYAN" "$C_RESET"
 
 run_suite() {
@@ -96,7 +96,7 @@ run_suite 3  test_diversion_and_hook        6 "ReprogControls 0x1B04 Diversion &
 run_suite 4  test_gesture_and_inject        6 "Gesture Swipe Accumulator & Native Injection"
 run_suite 5  test_config                    5 "TOML Schema Parser, Profile Resolution & Watchers"
 run_suite 6  test_ipc_server                5 "JSON-RPC 2.0 UNIX Domain Socket Server"
-run_suite 7  test_cli                       3 "openlogictl CLI Client & Autostart Management"
+run_suite 7  test_cli                       4 "openlogictl CLI Client & Autostart Management"
 run_suite 8  test_single_instance           2 "Single-Instance Flock Process Lock"
 run_suite 9  test_button_runtime            7 "Button Press State Machine & Lifecycle"
 run_suite 10 test_wheel_math                5 "Thumbwheel & Mathematical Scroll Scaling"

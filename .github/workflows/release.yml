@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.architecture }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: arm64
+            runner: macos-14
+          - architecture: x86_64
+            runner: macos-15-intel
+    env:
+      CC: clang
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
+      UBSAN_OPTIONS: halt_on_error=1
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Validate release tag and architecture
+        env:
+          EXPECTED_ARCHITECTURE: ${{ matrix.architecture }}
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(uname -m)" = "$EXPECTED_ARCHITECTURE"
+
+      - name: Test installer and updater
+        run: sh tests/test_install.sh
+
+      - name: Build and test
+        run: |
+          make -j3 all OPENLOGI_VERSION="${GITHUB_REF_NAME#v}"
+          make test VERBOSE=1 OPENLOGI_VERSION="${GITHUB_REF_NAME#v}"
+          make asan VERBOSE=1 OPENLOGI_VERSION="${GITHUB_REF_NAME#v}"
+
+      - name: Build release binaries and package
+        run: |
+          make clean
+          make -j3 strip RELEASE=1 OPENLOGI_VERSION="${GITHUB_REF_NAME#v}"
+          sh scripts/package_release.sh
+
+      - name: Upload release archives
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-${{ matrix.architecture }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download release archives
+        uses: actions/download-artifact@v8
+        with:
+          pattern: macos-*
+          merge-multiple: true
+          path: dist
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat dist/*.sha256 > dist/SHA256SUMS
+          (cd dist && sha256sum --check SHA256SUMS)
+          gh release create "$GITHUB_REF_NAME" \
+            dist/*.tar.gz dist/SHA256SUMS install.sh \
+            --verify-tag --title "OpenLogi $GITHUB_REF_NAME" \
+            --notes-file packaging/macos/release-notes.md

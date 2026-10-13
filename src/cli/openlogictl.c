@@ -6,6 +6,7 @@
 #include "ipc_client.h"
 #include "ipc_server.h"
 #include "config.h"
+#include "tool_path.h"
 #include "yyjson.h"
 
 #include <stdio.h>
@@ -18,6 +19,9 @@
 #include <time.h>
 #include <sys/stat.h>
 #include <ctype.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/wait.h>
 
 #define COLOR_RESET   "\033[0m"
 #define COLOR_BOLD    "\033[1m"
@@ -30,6 +34,7 @@
 static bool g_json_output = false;
 static bool g_autospawn = false;
 static char g_custom_socket[512] = { 0 };
+static const char *g_program_path;
 
 static void print_banner(void)
 {
@@ -1079,6 +1084,45 @@ static int cmd_setup(void)
     return 0;
 }
 
+#ifdef __APPLE__
+static int run_launchctl(const char *verb, const char *target, const char *path, bool quiet)
+{
+    pid_t child = fork();
+    if (child < 0) return -1;
+    if (child == 0) {
+        if (quiet) {
+            int sink = open("/dev/null", O_WRONLY);
+            if (sink >= 0) {
+                dup2(sink, STDOUT_FILENO);
+                dup2(sink, STDERR_FILENO);
+                close(sink);
+            }
+        }
+        execl("/bin/launchctl", "launchctl", verb, target, path, (char *)NULL);
+        _exit(127);
+    }
+    int status;
+    while (waitpid(child, &status, 0) < 0) {
+        if (errno != EINTR) return -1;
+    }
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+static void print_xml_text(FILE *file, const char *text)
+{
+    for (; *text; text++) {
+        switch (*text) {
+            case '&': fputs("&amp;", file); break;
+            case '<': fputs("&lt;", file); break;
+            case '>': fputs("&gt;", file); break;
+            case '"': fputs("&quot;", file); break;
+            case '\'': fputs("&apos;", file); break;
+            default: fputc((unsigned char)*text, file); break;
+        }
+    }
+}
+#endif
+
 /* --- Subcommand: autostart --- */
 static int cmd_autostart(int argc, char **argv)
 {
@@ -1116,15 +1160,17 @@ static int cmd_autostart(int argc, char **argv)
         printf("  openlogictl autostart disable  - Unload and remove LaunchAgent\n");
         return 0;
     } else if (strcmp(action, "enable") == 0) {
+        char bin_path[4096];
+        if (!tool_sibling_path(g_program_path, getenv("PATH"), "openlogid", bin_path, sizeof(bin_path))) {
+            fprintf(stderr, "[-] Could not find openlogid next to openlogictl. Reinstall all OpenLogi tools.\n");
+            return 1;
+        }
+
         char agents_dir[512];
         snprintf(agents_dir, sizeof(agents_dir), "%s/Library/LaunchAgents", home);
-        mkdir(agents_dir, 0755);
-
-        char bin_path[512] = "/usr/local/bin/openlogid";
-        if (access(bin_path, X_OK) != 0) {
-            if (access("bin/openlogid", X_OK) == 0) {
-                realpath("bin/openlogid", bin_path);
-            }
+        if (mkdir(agents_dir, 0755) != 0 && errno != EEXIST) {
+            perror("[-] Could not create LaunchAgents directory");
+            return 1;
         }
 
         FILE *f = fopen(plist_path, "w");
@@ -1138,7 +1184,9 @@ static int cmd_autostart(int argc, char **argv)
         fprintf(f, "<plist version=\"1.0\">\n<dict>\n");
         fprintf(f, "    <key>Label</key>\n    <string>io.github.openlogi.agent</string>\n");
         fprintf(f, "    <key>ProgramArguments</key>\n    <array>\n");
-        fprintf(f, "        <string>%s</string>\n", bin_path);
+        fputs("        <string>", f);
+        print_xml_text(f, bin_path);
+        fputs("</string>\n", f);
         fprintf(f, "    </array>\n");
         fprintf(f, "    <key>RunAtLoad</key>\n    <true/>\n");
         fprintf(f, "    <key>KeepAlive</key>\n    <true/>\n");
@@ -1146,14 +1194,38 @@ static int cmd_autostart(int argc, char **argv)
         fprintf(f, "    <key>StandardOutPath</key>\n    <string>/tmp/openlogid.stdout.log</string>\n");
         fprintf(f, "    <key>StandardErrorPath</key>\n    <string>/tmp/openlogid.stderr.log</string>\n");
         fprintf(f, "</dict>\n</plist>\n");
-        fclose(f);
+        if (fclose(f) != 0) {
+            perror("[-] Could not write LaunchAgent");
+            return 1;
+        }
 
-        char cmd[1024];
-        snprintf(cmd, sizeof(cmd), "launchctl unload \"%s\" > /dev/null 2>&1; launchctl load -w \"%s\"", plist_path, plist_path);
-        (void)system(cmd);
+        char domain[64], service[128];
+        snprintf(domain, sizeof(domain), "gui/%u", (unsigned)getuid());
+        snprintf(service, sizeof(service), "%s/io.github.openlogi.agent", domain);
+        (void)run_launchctl("bootout", service, NULL, true);
+        if (run_launchctl("enable", service, NULL, false) != 0) {
+            fprintf(stderr, "[-] Could not enable LaunchAgent at %s\n", plist_path);
+            return 1;
+        }
+        if (run_launchctl("bootstrap", domain, plist_path, false) != 0) {
+            fprintf(stderr, "[-] Could not start LaunchAgent at %s\n", plist_path);
+            return 1;
+        }
 
         if (g_json_output) {
-            printf("{\"success\":true,\"action\":\"enabled\",\"path\":\"%s\",\"binary\":\"%s\"}\n", plist_path, bin_path);
+            yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+            if (!doc) return 1;
+            yyjson_mut_val *root = yyjson_mut_obj(doc);
+            yyjson_mut_doc_set_root(doc, root);
+            yyjson_mut_obj_add_bool(doc, root, "success", true);
+            yyjson_mut_obj_add_str(doc, root, "action", "enabled");
+            yyjson_mut_obj_add_str(doc, root, "path", plist_path);
+            yyjson_mut_obj_add_str(doc, root, "binary", bin_path);
+            char *json = yyjson_mut_write(doc, 0, NULL);
+            if (!json) { yyjson_mut_doc_free(doc); return 1; }
+            puts(json);
+            free(json);
+            yyjson_mut_doc_free(doc);
         } else {
             printf(COLOR_BOLD COLOR_GREEN "[+] Autostart successfully enabled!" COLOR_RESET "\n");
             printf("    Registered LaunchAgent: %s\n", plist_path);
@@ -1254,6 +1326,7 @@ static void print_usage(const char *progname)
 
 int main(int argc, char **argv)
 {
+    g_program_path = argv[0];
     static struct option long_options[] = {
         {"json",      no_argument,       0, 'j'},
         {"socket",    required_argument, 0, 's'},
