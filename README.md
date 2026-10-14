@@ -346,8 +346,8 @@ The [macOS CI workflow](.github/workflows/macos.yml) runs on pushes, pull reques
 The [release workflow](.github/workflows/release.yml) runs when a version tag such as `v0.1.1` is pushed. It tests both architectures, rebuilds clean release binaries for macOS 13+, signs and packages them, and publishes the archives, installer, and `SHA256SUMS` in a GitHub Release. Both builds must pass before publication. To publish a new version after updating and testing the code, choose an unused version tag, for example:
 
 ```sh
-git tag v0.1.2
-git push origin v0.1.2
+git tag v0.1.3
+git push origin v0.1.3
 ```
 
 Use a new version tag for each release. The tag determines the version reported by its binaries.

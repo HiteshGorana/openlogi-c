@@ -5,16 +5,17 @@ curl -fsSL https://raw.githubusercontent.com/HiteshGorana/openlogi-c/main/instal
 ```
 
 The installer selects Apple Silicon or Intel binaries, verifies their SHA-256 checksum,
-and installs them in `~/.local/bin`. Rerunning it updates to the latest release and
-restarts an active installation. Your TOML configuration is retained.
+and installs the unified `openlogi` binary alongside backward-compatibility symlinks
+(`openlogid`, `openlogictl`, `openlogi_discover`) in `~/.local/bin`. Rerunning it updates
+to the latest release and restarts an active installation. Your TOML configuration is retained.
 
-Grant `~/.local/bin/openlogid` Accessibility and Input Monitoring access in
+Grant `~/.local/bin/openlogi` Accessibility and Input Monitoring access in
 System Settings → Privacy & Security, then run:
 
 ```sh
-~/.local/bin/openlogictl autostart enable
-~/.local/bin/openlogictl setup
-~/.local/bin/openlogictl status
+~/.local/bin/openlogi service enable
+~/.local/bin/openlogi setup
+~/.local/bin/openlogi status
 ```
 
 These binaries are signed locally with an ad-hoc signature. They are not notarized
