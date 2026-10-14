@@ -14,6 +14,7 @@
 #include "device.h"
 #include "hidpp_reprog.h"
 #include "single_instance.h"
+#include "subcommands.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -500,9 +501,10 @@ static void print_usage(const char *progname)
     printf("  -h, --help           Show this help message and exit\n");
 }
 
-int main(int argc, char **argv)
+int daemon_main(int argc, char **argv)
 {
     bool run_as_daemon = false;
+    optind = 1;
 
     static struct option long_options[] = {
         {"daemon",  no_argument,       0, 'd'},

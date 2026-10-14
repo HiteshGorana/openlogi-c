@@ -7,6 +7,7 @@
 #include "ipc_server.h"
 #include "config.h"
 #include "tool_path.h"
+#include "subcommands.h"
 #include "yyjson.h"
 
 #include <stdio.h>
@@ -55,7 +56,7 @@ static bool connect_or_warn(ipc_client_t *client)
         if (!g_json_output) {
             printf("[*] Daemon not running. Auto-spawning openlogid...\n");
         }
-        (void)system("openlogid --daemon > /dev/null 2>&1 || bin/openlogid --daemon > /dev/null 2>&1");
+        (void)system("openlogi daemon --daemon > /dev/null 2>&1 || openlogid --daemon > /dev/null 2>&1 || bin/openlogi daemon --daemon > /dev/null 2>&1 || bin/openlogid --daemon > /dev/null 2>&1");
         usleep(150000); /* 150ms settling time */
         if (ipc_client_connect(sock, client)) {
             return true;
@@ -65,9 +66,10 @@ static bool connect_or_warn(ipc_client_t *client)
     if (g_json_output) {
         printf("{\"error\":\"Daemon not running or unreachable\"}\n");
     } else {
-        fprintf(stderr, COLOR_RED "[-] Error: Could not connect to OpenLogi daemon (openlogid)." COLOR_RESET "\n");
-        fprintf(stderr, "    Please verify that openlogid is running:\n");
-        fprintf(stderr, "      openlogid --daemon\n");
+        fprintf(stderr, COLOR_RED "[-] Error: Could not connect to OpenLogi daemon." COLOR_RESET "\n");
+        fprintf(stderr, "    Please verify that the daemon is running:\n");
+        fprintf(stderr, "      openlogi daemon --daemon\n");
+        fprintf(stderr, "    Or run: openlogi service enable\n");
         fprintf(stderr, "    Or use --autospawn to launch automatically.\n\n");
     }
     return false;
@@ -1161,8 +1163,11 @@ static int cmd_autostart(int argc, char **argv)
         return 0;
     } else if (strcmp(action, "enable") == 0) {
         char bin_path[4096];
-        if (!tool_sibling_path(g_program_path, getenv("PATH"), "openlogid", bin_path, sizeof(bin_path))) {
-            fprintf(stderr, "[-] Could not find openlogid next to openlogictl. Reinstall all OpenLogi tools.\n");
+        bool is_unified = false;
+        if (tool_sibling_path(g_program_path, getenv("PATH"), "openlogi", bin_path, sizeof(bin_path))) {
+            is_unified = true;
+        } else if (!tool_sibling_path(g_program_path, getenv("PATH"), "openlogid", bin_path, sizeof(bin_path))) {
+            fprintf(stderr, "[-] Could not find openlogi or openlogid binary. Reinstall OpenLogi.\n");
             return 1;
         }
 
@@ -1187,6 +1192,9 @@ static int cmd_autostart(int argc, char **argv)
         fputs("        <string>", f);
         print_xml_text(f, bin_path);
         fputs("</string>\n", f);
+        if (is_unified) {
+            fprintf(f, "        <string>daemon</string>\n");
+        }
         fprintf(f, "    </array>\n");
         fprintf(f, "    <key>RunAtLoad</key>\n    <true/>\n");
         fprintf(f, "    <key>KeepAlive</key>\n    <true/>\n");
@@ -1324,9 +1332,10 @@ static void print_usage(const char *progname)
     printf("  -h, --help                     Show this help message\n");
 }
 
-int main(int argc, char **argv)
+int ctl_main(int argc, char **argv)
 {
     g_program_path = argv[0];
+    optind = 1;
     static struct option long_options[] = {
         {"json",      no_argument,       0, 'j'},
         {"socket",    required_argument, 0, 's'},
@@ -1377,7 +1386,7 @@ int main(int argc, char **argv)
         return cmd_monitor();
     } else if (strcmp(cmd, "setup") == 0) {
         return cmd_setup();
-    } else if (strcmp(cmd, "autostart") == 0) {
+    } else if (strcmp(cmd, "autostart") == 0 || strcmp(cmd, "service") == 0) {
         return cmd_autostart(sub_argc, sub_argv);
     } else {
         fprintf(stderr, "[-] Unknown command '%s'. Run '%s --help' for available commands.\n", cmd, argv[0]);

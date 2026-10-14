@@ -298,6 +298,70 @@ static void test_cli_subcommands(void)
     TEST_PASS("test_cli_subcommands");
 }
 
+static void test_unified_openlogi_dispatch(void)
+{
+    const char *unified = "bin/openlogi";
+    if (access(unified, X_OK) != 0) {
+        unified = "openlogi-c/bin/openlogi";
+    }
+    if (access(unified, X_OK) != 0) {
+        return;
+    }
+    char cmd[512];
+    int ret;
+
+    /* 1. openlogi --help */
+    snprintf(cmd, sizeof(cmd), "%s --help > /dev/null 2>&1", unified);
+    ret = system(cmd);
+    assert(ret == 0);
+
+    /* 2. openlogi --version */
+    snprintf(cmd, sizeof(cmd), "%s --version > /dev/null 2>&1", unified);
+    ret = system(cmd);
+    assert(ret == 0);
+
+    /* 3. openlogi actions */
+    snprintf(cmd, sizeof(cmd), "%s actions > /dev/null 2>&1", unified);
+    ret = system(cmd);
+    assert(ret == 0);
+
+    /* 4. openlogi service status */
+    snprintf(cmd, sizeof(cmd), "%s service status > /dev/null 2>&1", unified);
+    ret = system(cmd);
+    assert(ret == 0);
+
+    /* 5. openlogi discover */
+    snprintf(cmd, sizeof(cmd), "%s discover > /dev/null 2>&1", unified);
+    ret = system(cmd);
+    assert(ret == 0);
+
+    /* 6. symlink openlogi_discover */
+    const char *disc = "bin/openlogi_discover";
+    if (access(disc, X_OK) == 0) {
+        snprintf(cmd, sizeof(cmd), "%s > /dev/null 2>&1", disc);
+        ret = system(cmd);
+        assert(ret == 0);
+    }
+
+    /* 7. symlink openlogid --help */
+    const char *daemon = "bin/openlogid";
+    if (access(daemon, X_OK) == 0) {
+        snprintf(cmd, sizeof(cmd), "%s --help > /dev/null 2>&1", daemon);
+        ret = system(cmd);
+        assert(ret == 0);
+    }
+
+    /* 8. symlink openlogictl --help */
+    const char *ctl = "bin/openlogictl";
+    if (access(ctl, X_OK) == 0) {
+        snprintf(cmd, sizeof(cmd), "%s --help > /dev/null 2>&1", ctl);
+        ret = system(cmd);
+        assert(ret == 0);
+    }
+
+    TEST_PASS("test_unified_openlogi_dispatch");
+}
+
 int main(void)
 {
     test_suite_begin(&g_suite, "test_cli", "CLI & IPC Client Subcommand Suite");
@@ -306,6 +370,7 @@ int main(void)
     TEST_CASE_RUN(g_suite, test_ipc_client_methods);
     TEST_CASE_RUN(g_suite, test_cli_subcommands);
     TEST_CASE_RUN(g_suite, test_installed_daemon_path_resolution);
+    TEST_CASE_RUN(g_suite, test_unified_openlogi_dispatch);
 
     test_suite_end(&g_suite);
     return (g_suite.failed == 0) ? 0 : 1;

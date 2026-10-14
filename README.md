@@ -28,9 +28,10 @@ These are reported baseline measurements; binary sizes and resource use depend o
 ```
 openlogi-c/
 ├── bin/                        # Compiled tools and test executables
-│   ├── openlogid               # Background driver daemon
-│   ├── openlogictl             # CLI tool & setup wizard
-│   └── openlogi_discover       # Standalone hardware diagnostic tool
+│   ├── openlogi                # Unified multi-call CLI & daemon binary
+│   ├── openlogid               # Symlink -> openlogi (background driver daemon)
+│   ├── openlogictl             # Symlink -> openlogi (control tool & setup wizard)
+│   └── openlogi_discover       # Symlink -> openlogi (hardware diagnostic scanner)
 │
 ├── include/                    # C Public Headers
 │   ├── hidpp.h                 # HID++ 1.0/2.0 packet framing and error decoding
@@ -116,14 +117,14 @@ On **macOS 13 or newer**, install the latest release for Apple Silicon or Intel:
 curl -fsSL https://raw.githubusercontent.com/HiteshGorana/openlogi-c/main/install.sh | sh
 ```
 
-**Run the same command to update.** The installer verifies the release's SHA-256 checksum and installs the three tools in `~/.local/bin`. It restarts an active installation and retains your TOML configuration. A failed update restores the previous binaries. Xcode, a compiler, and sudo are not needed.
+**Run the same command to update.** The installer verifies the release's SHA-256 checksum and installs the unified `openlogi` binary alongside backward-compatible symlinks (`openlogid`, `openlogictl`, `openlogi_discover`) in `~/.local/bin`. It restarts an active installation and retains your TOML configuration. A failed update restores the previous binaries. Xcode, a compiler, and sudo are not needed.
 
-Grant `~/.local/bin/openlogid` **Accessibility** and **Input Monitoring** access in **System Settings → Privacy & Security**. To select the binary, use the **+** button, press **Cmd+Shift+G**, and enter `~/.local/bin/openlogid`. Then run:
+Grant `~/.local/bin/openlogi` (or `~/.local/bin/openlogid`) **Accessibility** and **Input Monitoring** access in **System Settings → Privacy & Security**. To select the binary, use the **+** button, press **Cmd+Shift+G**, and enter `~/.local/bin/openlogi`. Then run:
 
 ```sh
-~/.local/bin/openlogictl autostart enable
-~/.local/bin/openlogictl setup
-~/.local/bin/openlogictl status
+~/.local/bin/openlogi service enable
+~/.local/bin/openlogi setup
+~/.local/bin/openlogi status
 ```
 
 To use the commands without their full paths, add this to your shell profile:
@@ -157,19 +158,19 @@ git clone https://github.com/HiteshGorana/openlogi-c.git
 cd openlogi-c
 make all
 
-# Start in the foreground to inspect startup messages
-./bin/openlogid --verbose
+# Start the background driver daemon in the foreground to inspect startup messages
+./bin/openlogi daemon --verbose
 ```
 
 In another terminal, from the repository directory:
 
 ```bash
-./bin/openlogictl status
-./bin/openlogictl list
-./bin/openlogictl setup
+./bin/openlogi status
+./bin/openlogi list
+./bin/openlogi setup
 ```
 
-Grant the daemon **Accessibility** and **Input Monitoring** access in **System Settings → Privacy & Security** for input capture and synthesis, then restart it. Use `./bin/openlogid --daemon` to run it in the background, or enable the login service described below.
+Grant `openlogi` **Accessibility** and **Input Monitoring** access in **System Settings → Privacy & Security** for input capture and synthesis, then restart it. Use `./bin/openlogi daemon --daemon` to run it in the background, or enable the login service described below.
 
 ### Commands
 
@@ -177,10 +178,10 @@ Grant the daemon **Accessibility** and **Input Monitoring** access in **System S
 # Build all production binaries and test executables
 make all
 
-# Build only the three runtime tools
+# Build only the runtime binaries and symlinks
 make tools
 
-# Run all 19 C suites (98 test cases)
+# Run all 19 C suites (99 test cases)
 make test
 
 # Show individual test cases and timing
@@ -208,49 +209,59 @@ make uninstall PREFIX="$HOME/.local"
 
 ---
 
-## 5. CLI Reference (`openlogictl`)
+## 5. Unified CLI Reference (`openlogi`)
 
-`openlogictl` is the pure C command-line tool for controlling devices, inspecting the daemon, and managing settings.
+`openlogi` is the unified pure C command-line tool for controlling devices, running the background driver daemon, inspecting raw hardware diagnostics, and managing configuration. Legacy invocations via `openlogictl`, `openlogid`, and `openlogi_discover` continue to work identically via multi-call symlinks.
 
 ### Common Commands
 
 ```bash
 # Check daemon health, permissions, and active app
-openlogictl status
+openlogi status
 
 # Output in JSON format (ideal for menu bar widgets, Raycast, and scripts)
-openlogictl --json status
+openlogi --json status
 
 # List all connected Logitech devices, battery %, and current settings
-openlogictl list
+openlogi list
 
 # Set DPI resolution in real time
-openlogictl dpi set 2400
+openlogi dpi set 2400
 
 # Configure SmartShift scroll wheel mode and flick threshold
-openlogictl smartshift set ratchet 18
-openlogictl smartshift set freespin 25
-openlogictl smartshift set auto 14
+openlogi smartshift set ratchet 18
+openlogi smartshift set freespin 25
+openlogi smartshift set auto 14
+
+# Configure scroll preferences (invert direction, high-resolution wheel, smooth momentum)
+openlogi scroll invert toggle
+openlogi scroll hires enable
+
+# Direct hardware diagnostic scanner
+openlogi discover
 
 # Force an immediate reload of config.toml
-openlogictl reload
+openlogi reload
 
 # Stream real-time intercepted button events and gestures
-openlogictl monitor
+openlogi monitor
 
 # Launch the interactive ANSI setup wizard
-openlogictl setup
+openlogi setup
 
 # Inspect available actions and configuration
-openlogictl actions
-openlogictl options
-openlogictl config path
-openlogictl config show
+openlogi actions
+openlogi options
+openlogi config path
+openlogi config show
 
-# Autostart management (launchd on macOS)
-openlogictl autostart status
-openlogictl autostart enable
-openlogictl autostart disable
+# Autostart service management (launchd on macOS / systemd on Linux)
+openlogi service status
+openlogi service enable
+openlogi service disable
+
+# Run background driver daemon directly
+openlogi daemon --daemon
 ```
 
 ### Global Flags
@@ -290,7 +301,7 @@ Left = "PreviousDesktop"
 Right = "NextDesktop"
 ```
 
-For a specific mouse, replace `default` with a quoted device key from `openlogictl list`, such as `[devices."device:YOUR_SERIAL"]`, and use that key in the remaining tables. Changes are watched automatically; `openlogictl reload` also reloads the file on demand.
+For a specific mouse, replace `default` with a quoted device key from `openlogi list`, such as `[devices."device:YOUR_SERIAL"]`, and use that key in the remaining tables. Changes are watched automatically; `openlogi reload` also reloads the file on demand.
 
 ---
 
@@ -299,30 +310,30 @@ For a specific mouse, replace `default` with a quoted device key from `openlogic
 To start at login after using the installer:
 
 ```sh
-~/.local/bin/openlogictl autostart enable
-~/.local/bin/openlogictl autostart status
-~/.local/bin/openlogictl autostart disable
+~/.local/bin/openlogi service enable
+~/.local/bin/openlogi service status
+~/.local/bin/openlogi service disable
 ```
 
-When building from source, use the CLI in the repository:
+When building from source, use the unified CLI in the repository:
 
 ```bash
-./bin/openlogictl autostart enable
+./bin/openlogi service enable
 
 # Verify status
-./bin/openlogictl autostart status
+./bin/openlogi service status
 
 # Stop the service and remove its login entry
-./bin/openlogictl autostart disable
+./bin/openlogi service disable
 ```
 
-The CLI generates `~/Library/LaunchAgents/io.github.openlogi.agent.plist` and loads it with `launchctl`. It finds `openlogid` alongside the running `openlogictl`, including installations in custom directories. Keep the tools together at that path. Service logs are written to `/tmp/openlogid.stdout.log` and `/tmp/openlogid.stderr.log`.
+The CLI generates `~/Library/LaunchAgents/io.github.openlogi.agent.plist` and loads it with `launchctl`. It finds `openlogi` (or `openlogid`) alongside the running binary, including installations in custom directories. Service logs are written to `/tmp/openlogid.stdout.log` and `/tmp/openlogid.stderr.log`.
 
 ---
 
 ## 8. Tests & Continuous Integration
 
-The C suite contains **98 test cases across 19 suites**, covering HID++ framing and feature probing, diversion, gestures, configuration, IPC, CLI commands and installed paths, single-instance locking, button timing, scrolling, wake/reconnect behavior, DPI cycling, session recovery, and actions/workflows. The offline installer checks cover architecture selection, updates, service restarts, rollback, checksum failures, and invalid archives.
+The C suite contains **99 test cases across 19 suites**, covering HID++ framing and feature probing, diversion, gestures, configuration, IPC, CLI commands and installed paths, single-instance locking, button timing, scrolling, wake/reconnect behavior, DPI cycling, session recovery, and actions/workflows. The offline installer checks cover architecture selection, updates, service restarts, rollback, checksum failures, and invalid archives.
 
 ```bash
 make test
@@ -330,7 +341,7 @@ make asan
 sh tests/test_install.sh
 ```
 
-The [macOS CI workflow](.github/workflows/macos.yml) runs on pushes, pull requests, and manual dispatches. It uses GitHub's [`macos-latest` runner](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) and Clang to build all three tools and the test executables, run the suite, and rebuild/run it with AddressSanitizer and UndefinedBehaviorSanitizer. Hardware control and macOS permission behavior require verification on a Mac with a connected device.
+The [macOS CI workflow](.github/workflows/macos.yml) runs on pushes, pull requests, and manual dispatches. It uses GitHub's [`macos-latest` runner](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) and Clang to build the runtime binaries and the test executables, run the suite, and rebuild/run it with AddressSanitizer and UndefinedBehaviorSanitizer. Hardware control and macOS permission behavior require verification on a Mac with a connected device.
 
 The [release workflow](.github/workflows/release.yml) runs when a version tag such as `v0.1.1` is pushed. It tests both architectures, rebuilds clean release binaries for macOS 13+, signs and packages them, and publishes the archives, installer, and `SHA256SUMS` in a GitHub Release. Both builds must pass before publication. To publish a new version after updating and testing the code, choose an unused version tag, for example:
 

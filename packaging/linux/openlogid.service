@@ -5,7 +5,7 @@ After=default.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/openlogid
+ExecStart=/usr/local/bin/openlogi daemon
 Restart=on-failure
 RestartSec=3
 StandardOutput=journal

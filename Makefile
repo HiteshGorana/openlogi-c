@@ -101,7 +101,7 @@ TEST_BINS = $(BIN_DIR)/test_hidpp_packet \
             $(BIN_DIR)/test_hires_wheel_curve \
             $(BIN_DIR)/test_actions
 
-TOOLS = $(BIN_DIR)/openlogi_discover $(BIN_DIR)/openlogid $(BIN_DIR)/openlogictl
+TOOLS = $(BIN_DIR)/openlogi $(BIN_DIR)/openlogid $(BIN_DIR)/openlogictl $(BIN_DIR)/openlogi_discover
 
 .PHONY: all test clean dirs tools install uninstall strip asan help info
 
@@ -205,17 +205,14 @@ $(BIN_DIR)/test_actions: tests/test_actions.c $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
-$(BIN_DIR)/openlogi_discover: src/cli/openlogi_discover.c $(CORE_OBJS)
+$(BIN_DIR)/openlogi: $(BUILD_DIR)/src/cli/openlogi.o $(BUILD_DIR)/src/daemon/main.o $(BUILD_DIR)/src/cli/openlogictl.o $(BUILD_DIR)/src/cli/openlogi_discover.o $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
+	@ln -sf openlogi $(BIN_DIR)/openlogid
+	@ln -sf openlogi $(BIN_DIR)/openlogictl
+	@ln -sf openlogi $(BIN_DIR)/openlogi_discover
 
-$(BIN_DIR)/openlogid: src/daemon/main.c $(CORE_OBJS)
-	@mkdir -p $(BIN_DIR)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
-
-$(BIN_DIR)/openlogictl: src/cli/openlogictl.c $(CORE_OBJS)
-	@mkdir -p $(BIN_DIR)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+$(BIN_DIR)/openlogid $(BIN_DIR)/openlogictl $(BIN_DIR)/openlogi_discover: $(BIN_DIR)/openlogi
 
 test: dirs $(TEST_BINS) $(TOOLS)
 	@./tests/run_tests.sh $(VERBOSE)
@@ -223,18 +220,20 @@ test: dirs $(TEST_BINS) $(TOOLS)
 tools: dirs $(TOOLS)
 
 strip: all
-	strip $(TOOLS)
+	strip $(BIN_DIR)/openlogi
 	@ls -lh $(TOOLS)
 
 install: tools
 	@mkdir -p $(DESTDIR)$(BINDIR)
-	@install -m 755 $(BIN_DIR)/openlogid $(DESTDIR)$(BINDIR)/openlogid
-	@install -m 755 $(BIN_DIR)/openlogictl $(DESTDIR)$(BINDIR)/openlogictl
-	@install -m 755 $(BIN_DIR)/openlogi_discover $(DESTDIR)$(BINDIR)/openlogi_discover
+	@install -m 755 $(BIN_DIR)/openlogi $(DESTDIR)$(BINDIR)/openlogi
+	@ln -sf openlogi $(DESTDIR)$(BINDIR)/openlogid
+	@ln -sf openlogi $(DESTDIR)$(BINDIR)/openlogictl
+	@ln -sf openlogi $(DESTDIR)$(BINDIR)/openlogi_discover
 	@echo "[+] Successfully installed OpenLogi C tools to $(DESTDIR)$(BINDIR)"
 
 uninstall:
 	@# Stop any active daemon instances
+	@-pkill -x openlogi 2>/dev/null || true
 	@-pkill -x openlogid 2>/dev/null || true
 	@# Unload and remove macOS LaunchAgent
 	@-launchctl unload $(HOME)/Library/LaunchAgents/io.github.openlogi.agent.plist 2>/dev/null || true
@@ -244,6 +243,7 @@ uninstall:
 	@-systemctl --user disable openlogid.service 2>/dev/null || true
 	@-rm -f $(HOME)/.config/systemd/user/openlogid.service
 	@# Remove installed binaries
+	@rm -f $(DESTDIR)$(BINDIR)/openlogi
 	@rm -f $(DESTDIR)$(BINDIR)/openlogid
 	@rm -f $(DESTDIR)$(BINDIR)/openlogictl
 	@rm -f $(DESTDIR)$(BINDIR)/openlogi_discover

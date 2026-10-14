@@ -6,13 +6,16 @@
 #include "device.h"
 #include "hidpp.h"
 #include "hid_transport.h"
+#include "subcommands.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-int main(void)
+int discover_main(int argc, char **argv)
 {
+    (void)argc;
+    (void)argv;
     printf("=====================================================\n");
     printf("OpenLogi Pure C Hardware Discovery Tool\n");
     printf("=====================================================\n");

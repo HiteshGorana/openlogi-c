@@ -29,9 +29,17 @@ cleanup() {
         done
         if [ "$restart_needed" -eq 1 ]; then
             if [ "$restart_mode" = service ]; then
-                "$bin_dir/openlogictl" autostart enable >&2 || :
+                if [ -x "$bin_dir/openlogi" ]; then
+                    "$bin_dir/openlogi" service enable >&2 || :
+                else
+                    "$bin_dir/openlogictl" autostart enable >&2 || :
+                fi
             else
-                "$bin_dir/openlogid" --daemon >&2 || :
+                if [ -x "$bin_dir/openlogi" ]; then
+                    "$bin_dir/openlogi" daemon --daemon >&2 || :
+                else
+                    "$bin_dir/openlogid" --daemon >&2 || :
+                fi
             fi
         fi
     fi
@@ -108,8 +116,13 @@ awk -v name="$archive" '
 ' "$work_dir/SHA256SUMS" > "$work_dir/checksum" || die 'Missing or invalid archive checksum.'
 (cd "$work_dir" && shasum -a 256 -c checksum) || die 'Checksum verification failed; nothing was installed.'
 
-# Release archives contain only these three regular files at their root.
+# Release archives contain either openlogi or the legacy three binaries at their root.
 tar -tzf "$work_dir/$archive" > "$work_dir/members" || die 'Invalid release archive.'
+if grep -qx 'openlogi' "$work_dir/members"; then
+    tools='openlogi'
+else
+    tools='openlogid openlogictl openlogi_discover'
+fi
 LC_ALL=C sort "$work_dir/members" > "$work_dir/actual"
 printf '%s\n' $tools | LC_ALL=C sort > "$work_dir/expected"
 cmp -s "$work_dir/actual" "$work_dir/expected" || die 'Unexpected files in release archive.'
@@ -130,7 +143,7 @@ for tool in $tools; do
 done
 
 # Stop only an existing installation before replacing executable files.
-if [ -x "$bin_dir/openlogictl" ] && [ -x "$bin_dir/openlogid" ]; then
+if [ -x "$bin_dir/openlogi" ] || { [ -x "$bin_dir/openlogictl" ] && [ -x "$bin_dir/openlogid" ]; }; then
     domain="gui/$(id -u)"
     service="$domain/io.github.openlogi.agent"
     if launchctl print "$service" >/dev/null 2>&1; then
@@ -140,16 +153,16 @@ if [ -x "$bin_dir/openlogictl" ] && [ -x "$bin_dir/openlogid" ]; then
         launchctl bootout "$service" || die 'Could not stop the login service; update cancelled.'
     else
         # A foreground/background daemon started from this prefix also needs a restart.
-        for pid in $(pgrep -u "$(id -u)" -x openlogid || :); do
+        for pid in $({ pgrep -u "$(id -u)" -x openlogid 2>/dev/null || :; pgrep -u "$(id -u)" -x openlogi 2>/dev/null || :; } | sort -u); do
             executable=$(ps -p "$pid" -o comm= || :)
             process_dir=
             case "$executable" in
-                */openlogid) process_dir=$(CDPATH= cd -- "${executable%/*}" 2>/dev/null && pwd -P) || : ;;
+                */openlogid|*/openlogi) process_dir=$(CDPATH= cd -- "${executable%/*}" 2>/dev/null && pwd -P) || : ;;
             esac
             if [ "$process_dir" = "$bin_dir" ]; then
                 restart_mode=daemon
                 restart_needed=1
-                kill -TERM "$pid" || die 'Could not stop the running daemon.'
+                kill -TERM "$pid" 2>/dev/null || :
                 attempts=0
                 while kill -0 "$pid" 2>/dev/null; do
                     attempts=$((attempts + 1))
@@ -165,22 +178,43 @@ for tool in $tools; do
     changed_tools="$changed_tools $tool"
     mv -f "$stage_dir/$tool" "$bin_dir/$tool"
 done
+if [ -f "$bin_dir/openlogi" ]; then
+    for alias in openlogid openlogictl openlogi_discover; do
+        ln -sf openlogi "$bin_dir/$alias"
+    done
+fi
 if [ "$restart_needed" -eq 1 ]; then
     if [ "$restart_mode" = service ]; then
-        "$bin_dir/openlogictl" autostart enable || die 'Could not restart the service; restoring the previous tools.'
+        if [ -x "$bin_dir/openlogi" ]; then
+            "$bin_dir/openlogi" service enable || die 'Could not restart the service; restoring the previous tools.'
+        else
+            "$bin_dir/openlogictl" autostart enable || die 'Could not restart the service; restoring the previous tools.'
+        fi
     else
-        "$bin_dir/openlogid" --daemon || die 'Could not restart the daemon; restoring the previous tools.'
+        if [ -x "$bin_dir/openlogi" ]; then
+            "$bin_dir/openlogi" daemon --daemon || die 'Could not restart the daemon; restoring the previous tools.'
+        else
+            "$bin_dir/openlogid" --daemon || die 'Could not restart the daemon; restoring the previous tools.'
+        fi
     fi
 fi
 completed=1
 
 printf '\nOpenLogi %s installed in %s\n' "$version" "$bin_dir"
 printf 'Run this installer again to update to the latest release.\n'
-printf '\nGrant openlogid Accessibility and Input Monitoring access in System Settings > Privacy & Security.\n'
-printf 'Then start the login service and configure your mouse:\n  '
-quote "$bin_dir/openlogictl"; printf ' autostart enable\n  '
-quote "$bin_dir/openlogictl"; printf ' setup\n  '
-quote "$bin_dir/openlogictl"; printf ' status\n'
+if [ -x "$bin_dir/openlogi" ]; then
+    printf '\nGrant openlogi Accessibility and Input Monitoring access in System Settings > Privacy & Security.\n'
+    printf 'Then start the login service and configure your mouse:\n  '
+    quote "$bin_dir/openlogi"; printf ' service enable\n  '
+    quote "$bin_dir/openlogi"; printf ' setup\n  '
+    quote "$bin_dir/openlogi"; printf ' status\n'
+else
+    printf '\nGrant openlogid Accessibility and Input Monitoring access in System Settings > Privacy & Security.\n'
+    printf 'Then start the login service and configure your mouse:\n  '
+    quote "$bin_dir/openlogictl"; printf ' autostart enable\n  '
+    quote "$bin_dir/openlogictl"; printf ' setup\n  '
+    quote "$bin_dir/openlogictl"; printf ' status\n'
+fi
 case ":${PATH:-}:" in
     *":$bin_dir:"*) ;;
     *) printf '\nAdd the tools to your PATH (and save this in your shell profile):\n  export PATH='

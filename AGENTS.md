@@ -26,9 +26,10 @@ This document is the canonical reference manual and architectural contract for t
 ```
 openlogi-c/
 ├── bin/                          # Stripped or debug binaries & test executables
-│   ├── openlogid                 # Runtime background daemon (PID lock, IOKit, hook, IPC)
-│   ├── openlogictl               # Command-line control tool & interactive setup wizard
-│   ├── openlogi_discover         # Standalone hardware diagnostic scanner
+│   ├── openlogi                  # Unified multi-call CLI & daemon binary
+│   ├── openlogid                 # Symlink -> openlogi (background daemon)
+│   ├── openlogictl               # Symlink -> openlogi (control utility & setup wizard)
+│   ├── openlogi_discover         # Symlink -> openlogi (hardware diagnostic scanner)
 │   └── test_*                    # 19 compiled test suite binaries
 │
 ├── include/                      # Public C99 Header Interface
@@ -252,7 +253,7 @@ Hot-reloads `~/.config/openlogi/config.toml` on demand.
 
 ---
 
-## 7. Automated Test Suite (19 Suites / 98 Tests)
+## 7. Automated Test Suite (19 Suites / 99 Tests)
 
 The test harness provides comprehensive coverage with 0 external dependencies:
 
@@ -277,7 +278,7 @@ make asan
 | **04** | `test_gesture_and_inject.c` | 6 | Swipe accumulator, 4-way gesture commit, native CGEvent injection |
 | **05** | `test_config.c` | 5 | Schema v7 TOML parsing, kqueue file watcher, app watcher |
 | **06** | `test_ipc_server.c` | 5 | Non-blocking UNIX socket, JSON-RPC dispatch, concurrent clients |
-| **07** | `test_cli.c` | 4 | openlogictl dispatch, installed executable path resolution, autostart management |
+| **07** | `test_cli.c` | 5 | openlogictl & unified openlogi dispatch, installed executable path resolution, autostart management |
 | **08** | `test_single_instance.c` | 2 | POSIX flock file lock, duplicate daemon prevention, stale PID purge |
 | **09** | `test_button_runtime.c` | 7 | Press state machine, short click vs long press, hold timeouts |
 | **10** | `test_wheel_math.c` | 5 | Thumbwheel scaling, inverted coordinates, discrete ratchet units |

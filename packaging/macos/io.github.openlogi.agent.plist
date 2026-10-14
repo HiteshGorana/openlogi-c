@@ -6,7 +6,8 @@
     <string>io.github.openlogi.agent</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/openlogid</string>
+        <string>/usr/local/bin/openlogi</string>
+        <string>daemon</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
