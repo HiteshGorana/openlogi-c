@@ -201,7 +201,7 @@ if [ -f "$bin_dir/openlogi" ]; then
             for alias in openlogid openlogictl openlogi_discover; do
                 ln -sf openlogi "$app_dest/Contents/MacOS/$alias"
             done
-            cat << 'EOF' > "$app_dest/Contents/Info.plist"
+            cat << EOF > "$app_dest/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -218,8 +218,20 @@ if [ -f "$bin_dir/openlogi" ]; then
     <string>APPL</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
+    <key>CFBundleShortVersionString</key>
+    <string>${version#v}</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
     <key>LSUIElement</key>
     <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSAccessibilityUsageDescription</key>
+    <string>OpenLogi requires Accessibility permissions to intercept Logitech mouse buttons, wheel events, and dispatch gestures.</string>
+    <key>NSInputMonitoringUsageDescription</key>
+    <string>OpenLogi requires Input Monitoring permissions to communicate with Logitech USB and Bluetooth devices.</string>
 </dict>
 </plist>
 EOF

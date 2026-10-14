@@ -19,7 +19,7 @@ extern "C" {
 
 #define OPENLOGI_PROTOCOL_VERSION "2.0"
 #ifndef OPENLOGI_AGENT_VERSION
-#define OPENLOGI_AGENT_VERSION    "0.1.5-c"
+#define OPENLOGI_AGENT_VERSION    "0.1.6-c"
 #endif
 #define OPENLOGI_MAX_CLIENTS      16
 
