@@ -10,10 +10,10 @@ A lightweight native background driver and CLI tool for Logitech HID++ periphera
 
 The standard OpenLogi Rust agent provides great device control, but requires a heavy runtime footprint. Rewriting the core agent and control tool in Pure C achieves dramatic performance and resource efficiency gains:
 
-| Metric | Rust Agent (`openlogi-agent`) | Pure C Daemon (`openlogid`) | Improvement |
+| Metric | Rust Agent (`openlogi-agent`) | Pure C Unified (`openlogi`) | Improvement |
 |---|---|---|---|
 | **RAM Footprint (RSS)** | ~15.2 MB | **1.6 MB** | **~10x lighter** |
-| **Stripped Binary Size** | ~12.4 MB | **352 KB** | **~35x smaller** |
+| **Stripped Binary Size** | ~12.4 MB | **~400 KB** (unified) | **~30x smaller** |
 | **Idle CPU Usage** | ~0.05% - 0.2% | **0.00%** | **Near zero** |
 | **Build Dependencies** | 80+ Cargo crates | **Standard C library + macOS frameworks** (+ 2 vendored C libraries) | **No third-party package downloads** |
 | **IPC Protocol** | Rust `tarpc` / `bincode` (binary) | **JSON-RPC 2.0** (human-readable) | **Universal & language-neutral** |
@@ -67,7 +67,7 @@ openlogi-c/
 ├── install.sh                  # Install or update prebuilt macOS binaries
 ├── scripts/                    # Release packaging
 ├── .github/workflows/          # macOS CI and version-tagged releases
-└── tests/                      # 19 C test suites / 98 cases, plus installer checks
+└── tests/                      # 19 C test suites / 99 cases, plus installer checks
 ```
 
 ---
@@ -93,7 +93,7 @@ openlogi-c/
 - **TOML Config**: Parses OpenLogi schema v7 (`~/.config/openlogi/config.toml`).
 - **Per-App Fallback Profiles**: Detects the frontmost application (`NSWorkspace`) and resolves its button bindings with fallback to the device profile.
 - **Hot-Reloading**: Kernel `kqueue` watcher triggers instant configuration reload on file change, handling atomic file writes.
-- **Actions & Workflows**: 45 catalog actions and 8 parameterized/workflow action types, including custom shortcuts, held keys, text, application launch, AppleScript, and shell commands. See [ACTIONS.md](ACTIONS.md) or run `openlogictl actions` for the catalog.
+- **Actions & Workflows**: 45 catalog actions and 8 parameterized/workflow action types, including custom shortcuts, held keys, text, application launch, AppleScript, and shell commands. See [ACTIONS.md](ACTIONS.md) or run `openlogi actions` for the catalog.
 
 ### 3.4 Open JSON-RPC 2.0 IPC
 - Operates over local UNIX domain socket `~/.local/state/openlogi/openlogi.sock`.
@@ -136,7 +136,7 @@ export PATH="$HOME/.local/bin:$PATH"
 You can select a specific release or a different install directory:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/HiteshGorana/openlogi-c/main/install.sh | sh -s -- --version v0.1.1
+curl -fsSL https://raw.githubusercontent.com/HiteshGorana/openlogi-c/main/install.sh | sh -s -- --version v0.1.3
 curl -fsSL https://raw.githubusercontent.com/HiteshGorana/openlogi-c/main/install.sh | sh -s -- --prefix "$HOME/tools/openlogi"
 ```
 
@@ -268,14 +268,14 @@ openlogi daemon --daemon
 
 - `--json`: Machine-readable JSON output for all subcommands.
 - `-s, --socket <path>`: Specify custom UNIX domain socket path.
-- `-a, --autospawn`: Automatically launch `openlogid --daemon` if not already running.
+- `-a, --autospawn`: Automatically launch `openlogi daemon` if not already running.
 - `-h, --help`: Display command usage.
 
 ---
 
 ## 6. Configuration
 
-The default file is `~/.config/openlogi/config.toml`, or `$XDG_CONFIG_HOME/openlogi/config.toml` when set. Use `openlogictl setup` to configure it interactively, or edit it directly. For example:
+The default file is `~/.config/openlogi/config.toml`, or `$XDG_CONFIG_HOME/openlogi/config.toml` when set. Use `openlogi setup` to configure it interactively, or edit it directly. For example:
 
 ```toml
 schema_version = 7
