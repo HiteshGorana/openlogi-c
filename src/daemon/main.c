@@ -938,6 +938,10 @@ int daemon_main(int argc, char **argv)
     const char *lpath = (g_lock_file[0] != '\0') ? g_lock_file : NULL;
     int lock_fd = single_instance_acquire(lpath, &existing_pid);
     if (lock_fd < 0) {
+        if (run_as_daemon) {
+            /* Daemon already running in background: clean exit */
+            return 0;
+        }
         fprintf(stderr, "[openlogid] Error: Another instance of openlogid is already running (PID: %d). Exiting.\n", (int)existing_pid);
         return 1;
     }

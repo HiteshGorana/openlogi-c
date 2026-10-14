@@ -54,6 +54,41 @@ static void print_unified_help(const char *progname)
     printf("  %s dpi set 1600                # Set sensor DPI\n", progname);
 }
 
+#ifdef __APPLE__
+#include <ApplicationServices/ApplicationServices.h>
+#include <CoreFoundation/CoreFoundation.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
+static void macos_prompt_app_permissions(void)
+{
+    bool acc = AXIsProcessTrusted();
+    bool inp = CGPreflightListenEventAccess();
+
+    if (!acc) {
+        const void *keys[] = { kAXTrustedCheckOptionPrompt };
+        const void *values[] = { kCFBooleanTrue };
+        CFDictionaryRef options = CFDictionaryCreate(
+            kCFAllocatorDefault,
+            keys,
+            values,
+            1,
+            &kCFTypeDictionaryKeyCallBacks,
+            &kCFTypeDictionaryValueCallBacks
+        );
+        if (options) {
+            AXIsProcessTrustedWithOptions(options);
+            CFRelease(options);
+        }
+        (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility\" 2>/dev/null");
+    }
+    if (!inp) {
+        CGRequestListenEventAccess();
+        (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent\" 2>/dev/null");
+    }
+}
+#endif
+
 int main(int argc, char **argv)
 {
     const char *prog = get_basename(argv[0]);
@@ -68,6 +103,17 @@ int main(int argc, char **argv)
     if (strcmp(prog, "openlogictl") == 0) {
         return ctl_main(argc, argv);
     }
+
+#ifdef __APPLE__
+    /* Check if launched by Finder/Spotlight/Launchpad as a macOS .app bundle */
+    bool is_app_bundle = (strstr(argv[0], ".app/Contents/MacOS/") != NULL);
+    bool is_psn_launch = (argc >= 2 && strncmp(argv[1], "-psn", 4) == 0);
+
+    if (is_app_bundle || is_psn_launch) {
+        macos_prompt_app_permissions();
+        return daemon_main(argc, argv);
+    }
+#endif
 
     /* 2. Direct invocation as 'openlogi' */
     if (argc < 2) {
