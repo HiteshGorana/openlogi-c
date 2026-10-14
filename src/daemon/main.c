@@ -34,6 +34,9 @@
 #include <sys/time.h>
 #ifdef __APPLE__
 #include <CoreFoundation/CoreFoundation.h>
+#include <ApplicationServices/ApplicationServices.h>
+extern bool CGPreflightListenEventAccess(void);
+extern bool CGRequestListenEventAccess(void);
 #endif
 
 static openlogi_daemon_ctx_t g_daemon_ctx;
@@ -997,7 +1000,35 @@ int daemon_main(int argc, char **argv)
         printf("[openlogid] Config file hot-reload watcher active.\n");
     }
 
-    /* 7. Start Background Hotplug Monitor & Probe Connected Hardware */
+    /* 7. Check and request system permissions if needed (macOS) */
+#ifdef __APPLE__
+    bool has_ax = AXIsProcessTrusted();
+    bool has_inp = CGPreflightListenEventAccess();
+    if (!has_ax) {
+        const void *keys[] = { kAXTrustedCheckOptionPrompt };
+        const void *values[] = { kCFBooleanTrue };
+        CFDictionaryRef options = CFDictionaryCreate(
+            kCFAllocatorDefault,
+            keys,
+            values,
+            1,
+            &kCFTypeDictionaryKeyCallBacks,
+            &kCFTypeDictionaryValueCallBacks
+        );
+        if (options) {
+            AXIsProcessTrustedWithOptions(options);
+            CFRelease(options);
+        }
+    }
+    if (!has_inp) {
+        CGRequestListenEventAccess();
+    }
+    if (!has_ax || !has_inp) {
+        printf("[openlogid] Notice: Accessibility and/or Input Monitoring not granted. Requested system authorization.\n");
+    }
+#endif
+
+    /* 8. Start Background Hotplug Monitor & Probe Connected Hardware */
     hid_start_hotplug_monitor(on_hotplug_event, &g_daemon_ctx);
     daemon_probe_hardware(&g_daemon_ctx);
     daemon_reconcile_runtime_state(&g_daemon_ctx);

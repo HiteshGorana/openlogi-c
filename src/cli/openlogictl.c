@@ -25,6 +25,12 @@
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <sys/file.h>
+#ifdef __APPLE__
+#include <ApplicationServices/ApplicationServices.h>
+#include <CoreFoundation/CoreFoundation.h>
+extern bool CGRequestListenEventAccess(void);
+extern bool CGPreflightListenEventAccess(void);
+#endif
 
 #define COLOR_RESET   "\033[0m"
 #define COLOR_BOLD    "\033[1m"
@@ -130,9 +136,11 @@ static int cmd_status(void)
     printf("OS Input Hook:       %s\n", hook_inst ? COLOR_GREEN "ACTIVE (Event Tap installed)" COLOR_RESET : COLOR_YELLOW "PASSIVE" COLOR_RESET);
 
     yyjson_val *perms = yyjson_obj_get(res, "permissions");
+    bool perms_ok = true;
     if (perms) {
         bool acc = yyjson_get_bool(yyjson_obj_get(perms, "accessibility"));
         bool inp = yyjson_get_bool(yyjson_obj_get(perms, "input_monitoring"));
+        perms_ok = acc && inp;
         printf("Permissions:         Accessibility: %s | Input Monitoring: %s\n",
                acc ? COLOR_GREEN "GRANTED" COLOR_RESET : COLOR_RED "DENIED" COLOR_RESET,
                inp ? COLOR_GREEN "GRANTED" COLOR_RESET : COLOR_RED "DENIED" COLOR_RESET);
@@ -143,7 +151,16 @@ static int cmd_status(void)
 
     uint64_t dev_count = yyjson_get_uint(yyjson_obj_get(res, "devices_online"));
     printf("Connected Devices:   " COLOR_BOLD "%llu online" COLOR_RESET "\n", (unsigned long long)dev_count);
-    printf(COLOR_CYAN "=====================================================" COLOR_RESET "\n\n");
+    printf(COLOR_CYAN "=====================================================" COLOR_RESET "\n");
+
+    if (!perms_ok) {
+        printf("\n" COLOR_BOLD COLOR_RED "[!] Notice: macOS permissions are missing for the background daemon:" COLOR_RESET "\n");
+        printf("    Without Accessibility and Input Monitoring, the driver cannot detect\n");
+        printf("    Logitech Bluetooth devices or intercept button clicks.\n\n");
+        printf("    Run " COLOR_BOLD "openlogi permissions request" COLOR_RESET " to authorize in System Settings.\n\n");
+    } else {
+        printf("\n");
+    }
 
     yyjson_doc_free(doc);
     return 0;
@@ -1249,6 +1266,10 @@ static int cmd_autostart(int argc, char **argv)
             printf("    Registered LaunchAgent: %s\n", plist_path);
             printf("    Daemon binary:          %s\n", bin_path);
             printf("    openlogid will now automatically launch on user login.\n");
+            if (!AXIsProcessTrusted() || !CGPreflightListenEventAccess()) {
+                printf(COLOR_YELLOW "[!] Note: macOS Accessibility & Input Monitoring permissions required." COLOR_RESET "\n");
+                printf("    Run 'openlogi permissions request' to prompt macOS and open System Settings.\n");
+            }
         }
         return 0;
     } else if (strcmp(action, "disable") == 0) {
@@ -1266,6 +1287,26 @@ static int cmd_autostart(int argc, char **argv)
         return 0;
     } else if (strcmp(action, "stop") == 0) {
         return cmd_stop();
+    } else if (strcmp(action, "restart") == 0) {
+        cmd_stop();
+        usleep(200000);
+        char domain[64];
+        snprintf(domain, sizeof(domain), "gui/%u", (unsigned)getuid());
+        if (run_launchctl("bootstrap", domain, plist_path, false) != 0) {
+            fprintf(stderr, "[-] Could not restart LaunchAgent at %s\n", plist_path);
+            return 1;
+        }
+
+        if (g_json_output) {
+            printf("{\"success\":true,\"action\":\"restarted\"}\n");
+        } else {
+            printf(COLOR_BOLD COLOR_GREEN "[+] OpenLogi service restarted." COLOR_RESET "\n");
+            if (!AXIsProcessTrusted() || !CGPreflightListenEventAccess()) {
+                printf(COLOR_YELLOW "[!] Note: macOS Accessibility & Input Monitoring permissions required." COLOR_RESET "\n");
+                printf("    Run 'openlogi permissions request' to prompt macOS and open System Settings.\n");
+            }
+        }
+        return 0;
     } else if (strcmp(action, "start") == 0) {
         char domain[64];
         snprintf(domain, sizeof(domain), "gui/%u", (unsigned)getuid());
@@ -1278,10 +1319,14 @@ static int cmd_autostart(int argc, char **argv)
             printf("{\"success\":true,\"action\":\"started\"}\n");
         } else {
             printf(COLOR_BOLD COLOR_GREEN "[+] OpenLogi service started." COLOR_RESET "\n");
+            if (!AXIsProcessTrusted() || !CGPreflightListenEventAccess()) {
+                printf(COLOR_YELLOW "[!] Note: macOS Accessibility & Input Monitoring permissions required." COLOR_RESET "\n");
+                printf("    Run 'openlogi permissions request' to prompt macOS and open System Settings.\n");
+            }
         }
         return 0;
     } else {
-        fprintf(stderr, "[-] Unknown action '%s'. Use 'status', 'enable', 'disable', 'start', or 'stop'.\n", action);
+        fprintf(stderr, "[-] Unknown action '%s'. Use 'status', 'enable', 'disable', 'start', 'restart', or 'stop'.\n", action);
         return 1;
     }
 #else
@@ -1321,6 +1366,16 @@ static int cmd_autostart(int argc, char **argv)
         return 0;
     } else if (strcmp(action, "stop") == 0) {
         return cmd_stop();
+    } else if (strcmp(action, "restart") == 0) {
+        cmd_stop();
+        usleep(200000);
+        (void)system("systemctl --user start openlogid.service 2>/dev/null");
+        if (g_json_output) {
+            printf("{\"success\":true,\"action\":\"restarted\"}\n");
+        } else {
+            printf(COLOR_BOLD COLOR_GREEN "[+] OpenLogi service restarted." COLOR_RESET "\n");
+        }
+        return 0;
     } else if (strcmp(action, "start") == 0) {
         (void)system("systemctl --user start openlogid.service 2>/dev/null");
         if (g_json_output) {
@@ -1330,9 +1385,105 @@ static int cmd_autostart(int argc, char **argv)
         }
         return 0;
     } else {
-        fprintf(stderr, "[-] Unknown action '%s'. Use 'status', 'enable', 'disable', 'start', or 'stop'.\n", action);
+        fprintf(stderr, "[-] Unknown action '%s'. Use 'status', 'enable', 'disable', 'start', 'restart', or 'stop'.\n", action);
         return 1;
     }
+#endif
+}
+
+static int cmd_permissions(int argc, char **argv)
+{
+#ifdef __APPLE__
+    bool acc = AXIsProcessTrusted();
+    bool inp = CGPreflightListenEventAccess();
+
+    if (argc > 0 && (strcmp(argv[0], "request") == 0 || strcmp(argv[0], "prompt") == 0 || strcmp(argv[0], "ask") == 0)) {
+        if (!acc) {
+            const void *keys[] = { kAXTrustedCheckOptionPrompt };
+            const void *values[] = { kCFBooleanTrue };
+            CFDictionaryRef options = CFDictionaryCreate(
+                kCFAllocatorDefault,
+                keys,
+                values,
+                1,
+                &kCFTypeDictionaryKeyCallBacks,
+                &kCFTypeDictionaryValueCallBacks
+            );
+            if (options) {
+                acc = AXIsProcessTrustedWithOptions(options);
+                CFRelease(options);
+            }
+        }
+        if (!inp) {
+            inp = CGRequestListenEventAccess();
+        }
+
+        /* Open System Settings preference panes */
+        (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility\" 2>/dev/null");
+        (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent\" 2>/dev/null");
+
+        /* Reveal the installed binary in Finder for drag & drop */
+        char binary[4096];
+        if (tool_sibling_path(g_program_path, getenv("PATH"), "openlogi", binary, sizeof(binary))) {
+            char cmd[4200];
+            snprintf(cmd, sizeof(cmd), "open -R \"%s\" 2>/dev/null", binary);
+            (void)system(cmd);
+        }
+    } else if (argc > 0 && strcmp(argv[0], "open") == 0) {
+        (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility\" 2>/dev/null");
+        (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent\" 2>/dev/null");
+    } else if (argc > 0 && strcmp(argv[0], "reveal") == 0) {
+        char binary[4096];
+        if (tool_sibling_path(g_program_path, getenv("PATH"), "openlogi", binary, sizeof(binary))) {
+            char cmd[4200];
+            snprintf(cmd, sizeof(cmd), "open -R \"%s\" 2>/dev/null", binary);
+            (void)system(cmd);
+        }
+    }
+
+    if (g_json_output) {
+        printf("{\"platform\":\"macos\",\"accessibility\":%s,\"input_monitoring\":%s,\"all_granted\":%s}\n",
+               acc ? "true" : "false", inp ? "true" : "false", (acc && inp) ? "true" : "false");
+        return (acc && inp) ? 0 : 1;
+    }
+
+    print_banner();
+    printf(COLOR_BOLD "macOS Permissions Status:" COLOR_RESET "\n");
+    printf("  Accessibility:     %s  %s\n",
+           acc ? COLOR_BOLD COLOR_GREEN "GRANTED" COLOR_RESET : COLOR_BOLD COLOR_RED "DENIED" COLOR_RESET,
+           acc ? "(Input event tap & synthetic events active)" : "(Required for mouse buttons, scroll & gesture dispatch)");
+    printf("  Input Monitoring:  %s  %s\n\n",
+           inp ? COLOR_BOLD COLOR_GREEN "GRANTED" COLOR_RESET : COLOR_BOLD COLOR_RED "DENIED" COLOR_RESET,
+           inp ? "(Direct IOKit access active)" : "(Required for Logitech Bluetooth & USB HID++ access)");
+
+    if (!acc || !inp) {
+        printf(COLOR_BOLD COLOR_YELLOW "[!] How to enable missing permissions:" COLOR_RESET "\n");
+        printf("  1. Run: " COLOR_BOLD "openlogi permissions request" COLOR_RESET "\n");
+        printf("     This prompts macOS and opens System Settings directly.\n");
+        printf("  2. In " COLOR_BOLD "System Settings -> Privacy & Security" COLOR_RESET ":\n");
+        printf("     • In " COLOR_CYAN "Accessibility" COLOR_RESET ", toggle ON " COLOR_BOLD "openlogi" COLOR_RESET " (or click + to add)\n");
+        printf("     • In " COLOR_CYAN "Input Monitoring" COLOR_RESET ", toggle ON " COLOR_BOLD "openlogi" COLOR_RESET " (or click + to add)\n");
+        printf("  3. If 'openlogi' is not listed, run " COLOR_BOLD "openlogi permissions reveal" COLOR_RESET "\n");
+        printf("     and drag the highlighted 'openlogi' file directly into System Settings.\n");
+        printf("  4. After granting permissions, restart the service:\n");
+        printf("     " COLOR_BOLD "openlogi restart" COLOR_RESET "\n\n");
+        return 1;
+    }
+
+    printf(COLOR_BOLD COLOR_GREEN "[+] All required macOS permissions are GRANTED!" COLOR_RESET "\n");
+    printf("    OpenLogi background driver has full hardware and input access.\n\n");
+    return 0;
+#else
+    (void)argc;
+    (void)argv;
+    if (g_json_output) {
+        printf("{\"platform\":\"linux\",\"accessibility\":true,\"input_monitoring\":true,\"all_granted\":true}\n");
+        return 0;
+    }
+    print_banner();
+    printf(COLOR_BOLD "Linux Permissions Status:" COLOR_RESET "\n");
+    printf("  Udev / Evdev:      " COLOR_BOLD COLOR_GREEN "GRANTED" COLOR_RESET " (User group permissions active)\n\n");
+    return 0;
 #endif
 }
 
@@ -1544,6 +1695,8 @@ static void print_usage(const char *progname)
     printf("  uninstall [--dry-run]          Remove this installation; keep configuration\n");
     printf("  status                         Show daemon health, permissions, and active app\n");
     printf("  stop                           Stop running background daemon or service\n");
+    printf("  restart                        Restart running background daemon or service\n");
+    printf("  permissions [request|open|reveal] Inspect or configure macOS permissions\n");
     printf("  list, devices, inventory       List connected devices and properties\n");
     printf("  scroll [get|invert|res|smooth] Inspect or configure mouse scroll & wheel settings\n");
     printf("  dpi get                        Get current sensor DPI\n");
@@ -1556,10 +1709,11 @@ static void print_usage(const char *progname)
     printf("  reload                         Hot-reload config.toml immediately\n");
     printf("  monitor                        Stream real-time intercepted events and gestures\n");
     printf("  setup                          Launch interactive ANSI terminal setup wizard\n");
-    printf("  autostart, service [status|enable|disable|start|stop] Configure automatic login autostart\n\n");
+    printf("  autostart, service [status|enable|disable|start|restart|stop] Configure automatic login autostart\n\n");
     printf("Examples:\n");
     printf("  %s scroll invert toggle         # Invert/un-invert mouse wheel scroll direction\n", progname);
     printf("  %s scroll resolution high      # Enable fine-grained hi-res scrolling\n", progname);
+    printf("  %s permissions request         # Prompt macOS to grant Accessibility & Input Monitoring\n", progname);
     printf("  %s actions                     # View all 53 available actions with descriptions\n", progname);
     printf("  %s options                     # View full TOML configuration options guide\n", progname);
     printf("  %s config set dpi 1600         # Update DPI setting in config.toml\n\n", progname);
@@ -1606,6 +1760,11 @@ int ctl_main(int argc, char **argv)
         return cmd_uninstall(sub_argc, sub_argv);
     } else if (strcmp(cmd, "stop") == 0) {
         return cmd_stop();
+    } else if (strcmp(cmd, "restart") == 0) {
+        char *args[] = { (char *)"restart", NULL };
+        return cmd_autostart(1, args);
+    } else if (strcmp(cmd, "permissions") == 0 || strcmp(cmd, "perms") == 0 || strcmp(cmd, "permission") == 0) {
+        return cmd_permissions(sub_argc, sub_argv);
     } else if (strcmp(cmd, "status") == 0) {
         return cmd_status();
     } else if (strcmp(cmd, "list") == 0 || strcmp(cmd, "inventory") == 0 || strcmp(cmd, "devices") == 0) {

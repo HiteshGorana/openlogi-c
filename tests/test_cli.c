@@ -306,6 +306,15 @@ static void test_cli_subcommands(void)
     ret = system(cmd);
     assert(ret == 0);
 
+    /* 16. openlogictl permissions & --json permissions */
+    snprintf(cmd, sizeof(cmd), "%s permissions > /dev/null 2>&1", cli);
+    ret = system(cmd);
+    assert(ret == 0 || ret == 1); /* 0 if granted, 1 if denied */
+
+    snprintf(cmd, sizeof(cmd), "%s --json permissions > /dev/null 2>&1", cli);
+    ret = system(cmd);
+    assert(ret == 0 || ret == 1);
+
     ipc_server_stop();
     TEST_PASS("test_cli_subcommands");
 }

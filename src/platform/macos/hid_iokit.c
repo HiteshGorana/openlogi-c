@@ -368,6 +368,9 @@ int hid_transport_init(void)
     IOReturn ret = IOHIDManagerOpen(g_hid_manager, kIOHIDOptionsTypeNone);
     if (ret != kIOReturnSuccess) {
         /* Open failed - likely Accessibility or Input Monitoring permission denied */
+        IOHIDManagerUnscheduleFromRunLoop(g_hid_manager, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
+        CFRelease(g_hid_manager);
+        g_hid_manager = NULL;
         return -2;
     }
 

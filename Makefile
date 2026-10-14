@@ -240,6 +240,9 @@ install: tools
 	@ln -sf openlogi $(DESTDIR)$(BINDIR)/openlogid
 	@ln -sf openlogi $(DESTDIR)$(BINDIR)/openlogictl
 	@ln -sf openlogi $(DESTDIR)$(BINDIR)/openlogi_discover
+ifeq ($(UNAME_S),Darwin)
+	@codesign --force --deep -s - $(DESTDIR)$(BINDIR)/openlogi 2>/dev/null || true
+endif
 	@echo "[+] Successfully installed OpenLogi C tools to $(DESTDIR)$(BINDIR)"
 
 uninstall:
