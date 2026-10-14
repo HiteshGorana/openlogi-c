@@ -1,297 +1,148 @@
-# OpenLogi Pure C (`openlogi-c`)
+# OpenLogi C
 
 [![macOS CI](https://github.com/HiteshGorana/openlogi-c/actions/workflows/macos.yml/badge.svg)](https://github.com/HiteshGorana/openlogi-c/actions/workflows/macos.yml)
 
-A lightweight native background driver and CLI tool for Logitech HID++ peripherals (MX Master 3S, MX Master 2S, MX Anywhere 3, and compatible devices), written in **Pure C (C99)**. The current hardware, input capture, and input synthesis backends target **macOS**.
+A small, native macOS daemon and command-line tool for customizing Logitech HID++ mice. Written in C99, OpenLogi combines device discovery, DPI and SmartShift control, mouse-button bindings, gestures, and local JSON-RPC in one executable.
 
----
+**Development status:** experimental. The core is implemented, but reconnect handling, configuration safety, and several advertised actions still need work before a stable release. Start with one mouse and review the [current limitations](#current-limitations). The [production readiness plan](improvements.md) tracks the fixes and release criteria.
 
-## 1. Motivation & Benchmark Comparison
+[Get started](#get-started) · [Commands](#commands) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Development](#development)
 
-The standard OpenLogi Rust agent provides great device control, but requires a heavy runtime footprint. Rewriting the core agent and control tool in Pure C achieves dramatic performance and resource efficiency gains:
+## What is here today
 
-| Metric | Rust Agent (`openlogi-agent`) | Pure C Unified (`openlogi`) | Improvement |
-|---|---|---|---|
-| **RAM Footprint (RSS)** | ~15.2 MB | **1.6 MB** | **~10x lighter** |
-| **Stripped Binary Size** | ~12.4 MB | **~400 KB** (unified) | **~30x smaller** |
-| **Idle CPU Usage** | ~0.05% - 0.2% | **0.00%** | **Near zero** |
-| **Build Dependencies** | 80+ Cargo crates | **Standard C library + macOS frameworks** (+ 2 vendored C libraries) | **No third-party package downloads** |
-| **IPC Protocol** | Rust `tarpc` / `bincode` (binary) | **JSON-RPC 2.0** (human-readable) | **Universal & language-neutral** |
-| **Build Time** | 45s - 90s | **< 1.5 seconds** | **~40x faster** |
+- **Native device access:** IOKit transport and HID++ feature probing for device information, battery, sensor DPI, SmartShift, and programmable controls.
+- **Mouse customization:** bindings for captured buttons, thumb-button gestures, per-application overrides, shortcuts, and system/media actions.
+- **A local control interface:** CLI commands, an interactive hardware setup menu, and a UNIX socket for integrations.
+- **A compact runtime:** one executable with compatibility aliases, system frameworks, and vendored JSON/TOML parsers. Building requires no third-party package downloads.
 
-These are reported baseline measurements; binary sizes and resource use depend on the compiler, architecture, and device configuration.
+Features depend on the device, firmware, connection, and macOS permissions. Discovery alone does not establish full compatibility.
 
----
+| Area | Current scope |
+| --- | --- |
+| Operating system | macOS backend; prebuilt releases target macOS 13 or newer. |
+| Architectures | Separate Apple Silicon (`arm64`) and Intel (`x86_64`) release archives. |
+| Devices | Logitech HID++ mice, including the MX Master and MX Anywhere families as intended targets. Model/transport certification remains part of the roadmap. |
+| Receivers | The diagnostic scanner probes paired receiver slots; the daemon's receiver-slot support is incomplete. |
+| Keyboard | Keyboard shortcuts can be emitted by mouse bindings. Per-keyboard input remapping is planned. |
+| Interface | CLI and terminal setup menu. A graphical configuration app is planned. |
+| Linux / Windows | No implemented hardware/input backend in this tree. Linux service packaging is included for future work. |
 
-## 2. Architecture & Components
+## Get started
 
-```
-openlogi-c/
-├── bin/                        # Compiled tools and test executables
-│   ├── openlogi                # Unified multi-call CLI & daemon binary
-│   ├── openlogid               # Symlink -> openlogi (background driver daemon)
-│   ├── openlogictl             # Symlink -> openlogi (control tool & setup wizard)
-│   └── openlogi_discover       # Symlink -> openlogi (hardware diagnostic scanner)
-│
-├── include/                    # C Public Headers
-│   ├── hidpp.h                 # HID++ 1.0/2.0 packet framing and error decoding
-│   ├── hidpp_reprog.h          # 0x1B04 ReprogControls diversion driver
-│   ├── hid_transport.h         # Native OS HID abstraction interface
-│   ├── gesture.h               # Swipe accumulator & gesture state machine
-│   ├── inject.h                # OS input synthesis (CoreDock, media keys, shortcuts)
-│   ├── config.h                # Schema v7 TOML config structures & resolver
-│   ├── config_watch.h          # kqueue file watcher for config hot-reloading
-│   ├── app_watch.h             # Active foreground app detection (NSWorkspace)
-│   ├── single_instance.h       # POSIX flock daemon process exclusivity
-│   ├── ipc_server.h            # JSON-RPC 2.0 UNIX domain socket server
-│   └── ipc_client.h            # JSON-RPC 2.0 client implementation
-│
-├── src/                        # Implementations
-│   ├── hid/                    # Packet engine, features (DPI, SmartShift, Battery, Diversion)
-│   ├── core/                   # Signals, gestures, single-instance lock, config resolver
-│   ├── hook/                   # OS input capture (CGEventTap on macOS)
-│   ├── inject/                 # OS input injection (CoreDock, NSEvent media keys, CGEvent)
-│   ├── ipc/                    # Non-blocking UNIX socket server & client
-│   ├── platform/macos/         # IOKit HID transport & NSWorkspace watcher
-│   ├── daemon/main.c           # Daemon lifecycle, signal handlers, main loop
-│   └── cli/                    # CLI commands & interactive setup wizard
-│
-├── vendor/                     # Vendored Zero-Dependency Libraries (MIT)
-│   ├── yyjson/                 # High-performance ANSI C JSON library
-│   └── tomlc99/                # C99 TOML parser
-│
-├── packaging/                  # Service Definitions
-│   ├── macos/                  # io.github.openlogi.agent.plist (launchd User Agent)
-│   └── linux/                  # openlogid.service (systemd user unit)
-│
-├── install.sh                  # Install or update prebuilt macOS binaries
-├── scripts/                    # Release packaging
-├── .github/workflows/          # macOS CI and version-tagged releases
-└── tests/                      # 19 C test suites / 99 cases, plus installer checks
-```
+### 1. Install
 
----
-
-## 3. Key Capabilities
-
-### 3.1 Hardware Transport & Firmware Diversion
-- **Logitech HID++ Protocol**: Supports Short (3-byte), Long (16-byte), and Very Long (60-byte) packets across HID++ 1.0 and HID++ 2.0+.
-- **Feature Probing**: Auto-detects device name (`0x0005`), battery status & charging state (`0x1000`/`0x1004`), sensor DPI limits (`0x2201`), and SmartShift ratchet/free-spin scroll modes (`0x2110`).
-- **Firmware ReprogControls Diversion (`0x1B04`)**: Diverts special mouse controls (thumb button, mode shift) into software events with high-rate raw XY pointer tracking.
-- **Shutdown Cleanup**: Signal handlers (`SIGINT`, `SIGTERM`, `SIGHUP`, `SIGQUIT`) request teardown of diverted controls when the daemon exits.
-
-### 3.2 Gestures & Input Synthesis
-- **Swipe Accumulator**: Deadzone filtering (40 units), axis cross-ratio gating (35%), 160 ms minimum hold time, and mid-swipe commit-once semantics prevent misfires.
-- **Native macOS Actions**:
-  - Mission Control (`com.apple.expose.awake`) via private `CoreDockSendNotification`.
-  - App Exposé (`com.apple.expose.front.awake`), Show Desktop, and Launchpad.
-  - Virtual Desktop / Spaces switching.
-  - Media keys (Play/Pause, Next Track, Previous Track, Volume, Mute) via native `NSEvent` system events.
-  - Arbitrary keyboard shortcuts and smooth sub-pixel scroll wheel synthesis.
-
-### 3.3 Dynamic Profiles & Configuration
-- **TOML Config**: Parses OpenLogi schema v7 (`~/.config/openlogi/config.toml`).
-- **Per-App Fallback Profiles**: Detects the frontmost application (`NSWorkspace`) and resolves its button bindings with fallback to the device profile.
-- **Hot-Reloading**: Kernel `kqueue` watcher triggers instant configuration reload on file change, handling atomic file writes.
-- **Actions & Workflows**: 45 catalog actions and 8 parameterized/workflow action types, including custom shortcuts, held keys, text, application launch, AppleScript, and shell commands. See [ACTIONS.md](ACTIONS.md) or run `openlogi actions` for the catalog.
-
-### 3.4 Open JSON-RPC 2.0 IPC
-- Operates over local UNIX domain socket `~/.local/state/openlogi/openlogi.sock`.
-- Standard JSON-RPC 2.0 methods:
-  - `openlogi.get_status`
-  - `openlogi.get_inventory`
-  - `openlogi.set_dpi`
-  - `openlogi.set_smartshift`
-  - `openlogi.reload_config`
-  - `openlogi.subscribe` (stream real-time event notifications)
-
----
-
-## 4. Building & Installation
-
-### Install or Update with curl
-
-On **macOS 13 or newer**, install the latest release for Apple Silicon or Intel:
+Run as your normal macOS user:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/HiteshGorana/openlogi-c/main/install.sh | sh
 ```
 
-**Run the same command to update.** The installer verifies the release's SHA-256 checksum and installs the unified `openlogi` binary alongside backward-compatible symlinks (`openlogid`, `openlogictl`, `openlogi_discover`) in `~/.local/bin`. It restarts an active installation and retains your TOML configuration. A failed update restores the previous binaries. Xcode, a compiler, and sudo are not needed.
+The installer downloads the latest published release, checks its SHA-256 checksum, and installs to `~/.local/bin`. It does not require Xcode, a compiler, or `sudo`.
 
-Grant `~/.local/bin/openlogi` (or `~/.local/bin/openlogid`) **Accessibility** and **Input Monitoring** access in **System Settings → Privacy & Security**. To select the binary, use the **+** button, press **Cmd+Shift+G**, and enter `~/.local/bin/openlogi`. Then run:
-
-```sh
-~/.local/bin/openlogi service enable
-~/.local/bin/openlogi setup
-~/.local/bin/openlogi status
-```
-
-To use the commands without their full paths, add this to your shell profile:
+Add the installation directory to your shell's `PATH`, and save the same line in your shell profile if needed:
 
 ```sh
 export PATH="$HOME/.local/bin:$PATH"
+openlogi --version
 ```
 
-You can select a specific release or a different install directory:
+Alternatively, use `~/.local/bin/openlogi` directly. Archives are also available on the [releases page](https://github.com/HiteshGorana/openlogi-c/releases).
+
+### 2. Grant permissions
+
+In **System Settings → Privacy & Security**, grant `openlogi` both **Accessibility** and **Input Monitoring** access. Use the **+** button and **Cmd+Shift+G** to select `~/.local/bin/openlogi`.
+
+Grant access to the executable you will actually run. A source build or custom-prefix installation has a different path. Current releases use ad-hoc signing, so macOS may require permissions again after an update.
+
+### 3. Create your bindings
+
+Create the configuration directory:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/HiteshGorana/openlogi-c/main/install.sh | sh -s -- --version v0.1.3
-curl -fsSL https://raw.githubusercontent.com/HiteshGorana/openlogi-c/main/install.sh | sh -s -- --prefix "$HOME/tools/openlogi"
-```
-
-For updates to a custom prefix, use that same `--prefix`. Release downloads are also available on the [GitHub Releases page](https://github.com/HiteshGorana/openlogi-c/releases). macOS may require you to grant permissions again after an update; release binaries use ad-hoc signing.
-
-### Build from Source
-
-### Prerequisites
-
-- macOS with Xcode Command Line Tools (`clang` and `make`). Install them with `xcode-select --install` if needed.
-- The build links the system `IOKit`, `CoreFoundation`, `ApplicationServices`, and `AppKit` frameworks. JSON and TOML libraries are vendored in this repository.
-
-Linux service packaging is included, but Linux hardware and input backends are not implemented in this tree.
-
-### Quick Start
-
-```bash
-git clone https://github.com/HiteshGorana/openlogi-c.git
-cd openlogi-c
-make all
-
-# Start the background driver daemon in the foreground to inspect startup messages
-./bin/openlogi daemon --verbose
-```
-
-In another terminal, from the repository directory:
-
-```bash
-./bin/openlogi status
-./bin/openlogi list
-./bin/openlogi setup
-```
-
-Grant `openlogi` **Accessibility** and **Input Monitoring** access in **System Settings → Privacy & Security** for input capture and synthesis, then restart it. Use `./bin/openlogi daemon --daemon` to run it in the background, or enable the login service described below.
-
-### Commands
-
-```bash
-# Build all production binaries and test executables
-make all
-
-# Build only the runtime binaries and symlinks
-make tools
-
-# Run all 19 C suites (99 test cases)
-make test
-
-# Show individual test cases and timing
-make test VERBOSE=1
-
-# Verify installation, updates, rollback, and download validation offline
-sh tests/test_install.sh
-
-# Run AddressSanitizer & UndefinedBehaviorSanitizer verification
-make asan
-
-# Strip release symbols and display binary sizes
-make strip
-
-# Install to a user-writable prefix
-make install PREFIX="$HOME/.local"
-export PATH="$HOME/.local/bin:$PATH"
-
-# Or install system-wide to /usr/local/bin
-sudo make install PREFIX=/usr/local
-
-# Uninstall from the same prefix used for installation
-make uninstall PREFIX="$HOME/.local"
-```
-
----
-
-## 5. Unified CLI Reference (`openlogi`)
-
-`openlogi` is the unified pure C command-line tool for controlling devices, running the background driver daemon, inspecting raw hardware diagnostics, and managing configuration. Legacy invocations via `openlogictl`, `openlogid`, and `openlogi_discover` continue to work identically via multi-call symlinks.
-
-### Common Commands
-
-```bash
-# Check daemon health, permissions, and active app
-openlogi status
-
-# Output in JSON format (ideal for menu bar widgets, Raycast, and scripts)
-openlogi --json status
-
-# List all connected Logitech devices, battery %, and current settings
-openlogi list
-
-# Set DPI resolution in real time
-openlogi dpi set 2400
-
-# Configure SmartShift scroll wheel mode and flick threshold
-openlogi smartshift set ratchet 18
-openlogi smartshift set freespin 25
-openlogi smartshift set auto 14
-
-# Configure scroll preferences (invert direction, high-resolution wheel, smooth momentum)
-openlogi scroll invert toggle
-openlogi scroll hires enable
-
-# Direct hardware diagnostic scanner
-openlogi discover
-
-# Force an immediate reload of config.toml
-openlogi reload
-
-# Stream real-time intercepted button events and gestures
-openlogi monitor
-
-# Launch the interactive ANSI setup wizard
-openlogi setup
-
-# Inspect available actions and configuration
-openlogi actions
-openlogi options
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/openlogi"
 openlogi config path
-openlogi config show
-
-# Autostart service management (launchd on macOS / systemd on Linux)
-openlogi service status
-openlogi service enable
-openlogi service disable
-
-# Run background driver daemon directly
-openlogi daemon --daemon
 ```
 
-### Global Flags
+Save the [starter configuration](#starter-configuration) at the path printed by the second command before starting the daemon. For an existing installation, back up your configuration before editing it.
 
-- `--json`: Machine-readable JSON output for all subcommands.
-- `-s, --socket <path>`: Specify custom UNIX domain socket path.
-- `-a, --autospawn`: Automatically launch `openlogi daemon` if not already running.
-- `-h, --help`: Display command usage.
+### 4. Start and inspect
 
----
+```sh
+openlogi service enable
+openlogi status
+openlogi list
+```
 
-## 6. Configuration
+Then open the interactive menu if you want to adjust live DPI or SmartShift settings:
 
-The default file is `~/.config/openlogi/config.toml`, or `$XDG_CONFIG_HOME/openlogi/config.toml` when set. Use `openlogi setup` to configure it interactively, or edit it directly. For example:
+```sh
+openlogi setup
+```
+
+`setup` provides device inspection, hardware adjustments, reload, and event monitoring. Button bindings are edited in TOML; the menu does not create a persistent binding configuration. See [troubleshooting](#troubleshooting) if the daemon starts but input or device control does not work.
+
+## Commands
+
+Most control commands require a running daemon. Help, version, action listing, and local configuration inspection can run independently.
+
+| Task | Command |
+| --- | --- |
+| Show version | `openlogi --version` |
+| Inspect daemon status | `openlogi status` |
+| List device keys and reported settings | `openlogi list` |
+| Read status as JSON | `openlogi --json status` |
+| Request a DPI change | `openlogi dpi set 1600` |
+| Target a specific device | `openlogi dpi set 1600 'device:YOUR_SERIAL'` |
+| Request ratchet mode | `openlogi smartshift set ratchet 16` |
+| Request free-spin mode | `openlogi smartshift set freespin 16` |
+| Open the hardware setup menu | `openlogi setup` |
+| List the action catalog | `openlogi actions` |
+| Print the configuration path / file | `openlogi config path` / `openlogi config show` |
+| Request configuration reload | `openlogi reload` |
+| Subscribe to daemon events | `openlogi monitor` |
+| Inspect the login service | `openlogi service status` |
+| Start at login / stop the service | `openlogi service enable` / `openlogi service disable` |
+
+Use a device key from `openlogi list` when targeting a device; its sensor determines the actual supported DPI values. Hardware commands change live settings, while `config show` prints the file on disk. Neither is a guarantee that the daemon has applied a persisted setting; see [current limitations](#current-limitations).
+
+Place control flags **before** the command:
+
+```sh
+openlogi --json list
+openlogi --socket /path/to/openlogi.sock status
+```
+
+JSON output is available for supported control commands; interactive setup and some config operations still emit text. `--autospawn` can start a daemon when connecting, but the login service is the simpler way to manage a regular installation.
+
+For a temporary foreground session, first stop any existing login service, then run:
+
+```sh
+openlogi service disable
+openlogi daemon --verbose
+```
+
+Press **Ctrl+C** to request shutdown. Run `openlogi service enable` afterward to restore login startup.
+
+The compatibility aliases remain available: `openlogid` runs the daemon, `openlogictl` runs control commands, and `openlogi_discover` runs hardware diagnostics.
+
+## Configuration
+
+The default file is `~/.config/openlogi/config.toml`. If `XDG_CONFIG_HOME` is set, the path is `$XDG_CONFIG_HOME/openlogi/config.toml`. Run `openlogi config path` to see the CLI's path.
+
+A manually started daemon can use another file with `openlogi daemon --config /path/to/config.toml`. Keep the CLI and daemon paths/environment aligned: a login service does not automatically inherit variables from your shell profile.
+
+### Starter configuration
+
+This example uses one default mouse profile. It maps the side buttons to browser navigation, the middle button to reopen a tab, and the mode button to toggle SmartShift where available.
 
 ```toml
 schema_version = 7
-
-[devices.default]
-dpi = 1600
-dpi_presets = [800, 1600, 3200]
-
-[devices.default.smartshift]
-mode = "ratchet"
-auto_disengage = 16
 
 [devices.default.bindings]
 Back = "BrowserBack"
 Forward = "BrowserForward"
 MiddleClick = { CustomShortcut = "Cmd+Shift+T" }
+DpiToggle = "ToggleSmartShift"
 
 [devices.default.bindings.GestureButton]
 Click = "MissionControl"
@@ -299,130 +150,180 @@ Up = "MissionControl"
 Down = "AppExpose"
 Left = "PreviousDesktop"
 Right = "NextDesktop"
+
+[devices.default.per_app_bindings."com.apple.Safari"]
+MiddleClick = { CustomShortcut = "Cmd+T" }
 ```
 
-For a specific mouse, replace `default` with a quoted device key from `openlogi list`, such as `[devices."device:YOUR_SERIAL"]`, and use that key in the remaining tables. Changes are watched automatically; `openlogi reload` also reloads the file on demand.
+Hold the gesture button and move the mouse to choose a direction; release without a committed swipe to run `Click`. A per-app binding overrides the default for that button. Unspecified buttons in an app profile fall back to the default profile.
 
-### 6.1 Configuration Fields & Options Reference
+The watcher attempts to reload edits automatically, and `openlogi reload` requests an explicit reload. Invalid reloads can currently replace working bindings, so keep a known-working copy. Creating the file before daemon startup also avoids the watcher's missing-file limitation.
 
-#### Root & Hardware Settings (`[devices.<device-key>]`)
+### Settings and action formats
 
-| Field | Type | Options / Allowed Values | Description & Meaning | Related CLI Command |
-|---|---|---|---|---|
-| `schema_version` | Integer | `7` | Configuration specification version. Must be `7` for current format. | `openlogi options` |
-| `dpi` | Integer | `200` – `32000` (e.g. `1600`) | Optical sensor sensitivity in DPI. Controls mouse pointer tracking speed. | `openlogi dpi set 1600` |
-| `dpi_presets` | Array of Ints | e.g. `[800, 1600, 3200]` | Preset DPI steps rotated in order when the `CycleDpi` action is triggered. | `openlogi config set dpi_presets "[800, 1600, 3200]"` |
-| `invert_scroll` | Boolean | `true` \| `false` | Inverts mouse wheel vertical scroll direction without affecting trackpad settings. | `openlogi scroll invert toggle` |
-| `scroll_resolution` | String | `"low"` \| `"high"` | `"low"` = discrete ratchet notches; `"high"` = fine-grained sub-pixel ticks (HID++ 0x2121). | `openlogi scroll hires enable` |
+| Location / setting | Syntax | Current meaning |
+| --- | --- | --- |
+| Root schema | `schema_version = 7` | The configuration format used by this implementation. |
+| Device presets | `dpi_presets = [800, 1600, 2400]` under `[devices.default]` | Presets used by `CycleDpiPresets` and `SetDpiPreset`. |
+| Catalog action | `Back = "Copy"` in a bindings table | Invoke a named action; names are case-insensitive. |
+| Shortcut | `MiddleClick = { CustomShortcut = "Cmd+Shift+T" }` | Emit a key combination. |
+| Cycle DPI presets | `DpiToggle = "CycleDpiPresets"` | Advance through configured presets; per-device routing is incomplete. |
+| Select a preset | `DpiToggle = { SetDpiPreset = 1 }` | Select the **zero-based preset index**, so `1` selects the second preset. This is not an exact DPI value. |
+| Device hardware fields | `dpi`, `smartshift.mode`, `smartshift.auto_disengage` | Parsed from TOML, but startup/reconnect application is incomplete. Use hardware commands for a live change. |
 
-#### SmartShift Scroll Wheel (`[devices.<device-key>.smartshift]`)
+When adding `[devices.default]`, place it before its nested tables in the example. Other recognized formats include `TypeText`, `OpenApplication`, `RunShellCommand`, `RunAppleScript`, and `Workflow`; their runtime restrictions are listed below.
 
-| Field | Type | Options / Allowed Values | Description & Meaning | Related CLI Command |
-|---|---|---|---|---|
-| `mode` | String | `"ratchet"` \| `"freespin"` \| `"auto"` \| `"disabled"` | Scroll wheel mechanical clutch mode: `"ratchet"` for tactile clicky steps, `"freespin"` for silent frictionless spin, `"auto"` for automatic SmartShift disengage on quick flicks. | `openlogi smartshift set ratchet 16` |
-| `auto_disengage` | Integer | `1` – `255` (Default: `16`) | Flick sensitivity torque threshold before ratchet clutch auto-unlocks to free-spin mode. Lower values disengage more easily on gentler flicks; higher values require faster spinning. | `openlogi smartshift set auto 16` |
+`openlogi actions` exposes the catalog, but catalog presence does not prove a complete runtime implementation. [ACTIONS.md](ACTIONS.md) also describes behavior inherited from the broader Rust project, including keyboard and UI features that this C implementation does not yet provide.
 
-#### Supported Physical Buttons (`[devices.<device-key>.bindings]`)
+## Current limitations
 
-| Button Name | Location & Hardware Functionality | Default / Common Action |
-|---|---|---|
-| `MiddleClick` | Depressing the main center scroll wheel | `{ CustomShortcut = "Cmd+Shift+T" }` |
-| `Back` | Lower thumb side button on the mouse flank | `"BrowserBack"` |
-| `Forward` | Upper thumb side button on the mouse flank | `"BrowserForward"` |
-| `DpiToggle` | Top mode button behind the scroll wheel | `"CycleDpi"` or `"ToggleSmartShift"` |
-| `GestureButton` | Thumb rest paddle button (supports click + 4 swipe directions) | Directional table (see below) |
-| `ThumbwheelScrollUp` | Horizontal thumb wheel rotated upward | `"ScrollLeft"` / `"PrevTab"` |
-| `ThumbwheelScrollDown`| Horizontal thumb wheel rotated downward | `"ScrollRight"` / `"NextTab"` |
-| `WheelTiltLeft` | Main wheel tilted left (models with tilt wheel) | `"ScrollLeft"` / `"AppSwitchPrev"` |
-| `WheelTiltRight` | Main wheel tilted right (models with tilt wheel) | `"ScrollRight"` / `"AppSwitchNext"` |
+The [improvements roadmap](improvements.md) contains source references and acceptance tests for these issues.
 
-#### Action Formats & Value Syntax
+| Area | What to expect today |
+| --- | --- |
+| Reconnect and multiple devices | Hotplug/wake recovery, receiver slots, per-device routing, and stale-handle cleanup need fixes. Start with a single mouse; reconnects may require restarting the service. |
+| Native button behavior | Probing can divert gesture/mode controls even without a usable replacement binding. Keep mappings for those controls and use the recovery steps below if they stop responding. |
+| Settings and health | Hardware writes may report success without confirmation, and status currently reports Input Monitoring as granted without checking it. Verify permissions in System Settings and check actual device behavior. |
+| Reload and persistence | Reload is not transactional, workflow allocations lack complete cleanup, and saved hardware settings are not reliably reapplied. |
+| Scrolling | CLI scroll preferences are not connected to the daemon's scroll pipeline. The existing syntax is `scroll resolution high`; inversion, resolution, and smoothing are not dependable runtime features yet. |
+| Held shortcuts / action ring | `HoldShortcut` is parsed but emitted as a tap. `ShowActionsRing` has no runtime implementation. |
+| Scripts and workflows | Shell commands, AppleScript, and workflow delays run synchronously and can block input handling. |
+| Text injection | Non-ASCII text is not correctly converted from UTF-8. |
+| Input handling | Synthetic-event loop prevention and complete press/release handling still need work. Avoid mappings that emit the same intercepted mouse button. |
+| CLI / IPC | Some help text overstates feature support. Request-size checks, deadlines, and slow-client handling need hardening. |
 
-| Format | Syntax Example | Description & Meaning |
-|---|---|---|
-| **Catalog Action** | `Back = "BrowserBack"` | Executes one of the 45 built-in native actions (`MissionControl`, `AppExpose`, `ShowDesktop`, `Undo`, `Copy`, `Paste`, `VolumeUp`, `CycleDpi`, etc.). Run `openlogi actions` for the full catalog. |
-| **Custom Shortcut** | `MiddleClick = { CustomShortcut = "Cmd+Shift+T" }` | Injects keyboard chord combining modifiers (`Cmd`, `Ctrl`, `Alt`/`Option`, `Shift`) and a key (`Space`, `Return`, `Tab`, `F1`-`F12`, or characters). |
-| **Held Modifier** | `Back = { HoldShortcut = "Cmd" }` | Holds down the specified key or modifier while the physical mouse button is pressed, and releases it on button release (great for Cmd+Click or Option+Drag). |
-| **Type Text** | `MiddleClick = { TypeText = "MyText" }` | Types out an arbitrary UTF-8 text string sequentially via synthetic keyboard events. |
-| **Exact DPI Preset** | `DpiToggle = { SetDpiPreset = 2400 }` | Directly switches sensor resolution to an exact DPI value on press. |
-| **Open Application** | `DpiToggle = { OpenApplication = "/Applications/Safari.app" }` | Launches or focuses an application by bundle identifier or path. |
-| **Run Shell Command** | `Back = { RunShellCommand = "open -a Terminal ~" }` | Asynchronously executes a system shell command without blocking input. |
-| **Run AppleScript** | `Forward = { RunAppleScript = "tell app \"Music\" to next track" }` | Executes an AppleScript snippet asynchronously. |
-| **Multi-Step Macro** | `GestureButton = { Workflow = [ { PressKey = "Cmd+Space" }, { Delay = 100 }, { TypeText = "Terminal" }, { PressKey = "Return" } ] }` | Executes an automated sequence of keystrokes and millisecond delays. |
+## Troubleshooting
 
-#### 5-Way Directional Gestures (`[devices.<device-key>.bindings.GestureButton]`)
+| Symptom | What to check |
+| --- | --- |
+| `openlogi: command not found` | Use `~/.local/bin/openlogi`, or add that directory to `PATH`. For custom installs, use the selected prefix. |
+| Cannot connect to daemon | Run `openlogi service status`, then `openlogi service enable`. Check that CLI and daemon use the same socket path. |
+| Permission shown as granted, but input does not work | Check both Accessibility and Input Monitoring for the actual executable in System Settings, then restart the service. |
+| Another instance is already running | Stop the login service before starting a foreground daemon. Stop a foreground session with Ctrl+C before enabling the service. |
+| Device disappears after sleep/reconnect | Disable and re-enable the service. Collect the logs if the device still does not return. |
+| A setting saves but has no effect | Check the limitations above; scrolling and automatic hardware-setting application are incomplete. |
+| Bindings disappear after editing | Restore the last working TOML file and restart. Check stderr for a parse error. |
 
-| Gesture Field | Trigger Mechanism | Description & Meaning | CLI Command |
-|---|---|---|---|
-| `Click` | Press and release button without mouse movement | Plain tap action (within 160 ms or < 40 units displacement). | `openlogi monitor` |
-| `Up` | Hold button + push mouse forward | Swipe Up action (displacement > 40 units, angle within ±45°). | `openlogi monitor` |
-| `Down` | Hold button + pull mouse backward | Swipe Down action (displacement > 40 units, angle within ±45°). | `openlogi monitor` |
-| `Left` | Hold button + slide mouse left | Swipe Left action (displacement > 40 units, angle within ±45°). | `openlogi monitor` |
-| `Right` | Hold button + slide mouse right | Swipe Right action (displacement > 40 units, angle within ±45°). | `openlogi monitor` |
-
-### 6.2 Useful CLI Commands for Managing Configuration
-
-| Task / Goal | Command | Description |
-|---|---|---|
-| **View Active Config** | `openlogi config show` | Prints the complete currently loaded `config.toml`. |
-| **Get Config Path** | `openlogi config path` | Displays the absolute path of the configuration file. |
-| **Read a Setting** | `openlogi config get dpi` | Reads the current value of a key from `config.toml`. |
-| **Update a Setting** | `openlogi config set dpi 1600` | Updates setting in `config.toml` and automatically hot-reloads the daemon. |
-| **Set DPI in Real Time** | `openlogi dpi set 2400` | Instantly adjusts the optical sensor DPI on the active mouse. |
-| **Set SmartShift Mode** | `openlogi smartshift set ratchet 16` | Sets the SmartShift wheel mode (`ratchet`/`freespin`/`auto`) and threshold. |
-| **Toggle Invert Scroll** | `openlogi scroll invert toggle` | Toggles mouse wheel scroll direction inversion. |
-| **Browse All 53 Actions**| `openlogi actions` | Lists every supported action with names, aliases, and descriptions. |
-| **Interactive Wizard** | `openlogi setup` | Launches interactive ANSI terminal setup wizard to configure bindings step-by-step. |
-| **Live Event Stream** | `openlogi monitor` | Streams intercepted button clicks, gestures, and coordinates in real time. |
-| **Force Reload** | `openlogi reload` | Immediately re-reads and applies `config.toml` without restarting the process. |
-
----
-
-## 7. Autostart & Service Management
-
-To start at login after using the installer:
+Restart the login service:
 
 ```sh
-~/.local/bin/openlogi service enable
-~/.local/bin/openlogi service status
-~/.local/bin/openlogi service disable
+openlogi service disable
+openlogi service enable
 ```
 
-When building from source, use the unified CLI in the repository:
-
-```bash
-./bin/openlogi service enable
-
-# Verify status
-./bin/openlogi service status
-
-# Stop the service and remove its login entry
-./bin/openlogi service disable
-```
-
-The CLI generates `~/Library/LaunchAgents/io.github.openlogi.agent.plist` and loads it with `launchctl`. It finds `openlogi` (or `openlogid`) alongside the running binary, including installations in custom directories. Service logs are written to `/tmp/openlogid.stdout.log` and `/tmp/openlogid.stderr.log`.
-
----
-
-## 8. Tests & Continuous Integration
-
-The C suite contains **99 test cases across 19 suites**, covering HID++ framing and feature probing, diversion, gestures, configuration, IPC, CLI commands and installed paths, single-instance locking, button timing, scrolling, wake/reconnect behavior, DPI cycling, session recovery, and actions/workflows. The offline installer checks cover architecture selection, updates, service restarts, rollback, checksum failures, and invalid archives.
-
-```bash
-make test
-make asan
-sh tests/test_install.sh
-```
-
-The [macOS CI workflow](.github/workflows/macos.yml) runs on pushes, pull requests, and manual dispatches. It uses GitHub's [`macos-latest` runner](https://docs.github.com/en/actions/reference/runners/github-hosted-runners) and Clang to build the runtime binaries and the test executables, run the suite, and rebuild/run it with AddressSanitizer and UndefinedBehaviorSanitizer. Hardware control and macOS permission behavior require verification on a Mac with a connected device.
-
-The [release workflow](.github/workflows/release.yml) runs when a version tag such as `v0.1.1` is pushed. It tests both architectures, rebuilds clean release binaries for macOS 13+, signs and packages them, and publishes the archives, installer, and `SHA256SUMS` in a GitHub Release. Both builds must pass before publication. To publish a new version after updating and testing the code, choose an unused version tag, for example:
+Service logs currently live at:
 
 ```sh
-git tag v0.1.3
-git push origin v0.1.3
+tail -n 80 /tmp/openlogid.stderr.log /tmp/openlogid.stdout.log
 ```
 
-Use a new version tag for each release. The tag determines the version reported by its binaries.
+For direct device diagnostics, stop the daemon before scanning to avoid overlapping hardware requests:
 
-See [AGENTS.md](AGENTS.md) for the architecture, test suite map, and development conventions.
+```sh
+openlogi service disable
+openlogi discover
+```
+
+If a foreground daemon is running, stop it with Ctrl+C first. Run `openlogi service enable` after diagnostics if you want login startup restored.
+
+**Recover unresponsive buttons:** disable the service or stop the foreground daemon to request diversion cleanup. If controls remain unresponsive, power-cycle the mouse or reconnect its receiver. Review the configuration before starting OpenLogi again; forced termination cannot guarantee hardware cleanup.
+
+When [reporting an issue](https://github.com/HiteshGorana/openlogi-c/issues), include the OpenLogi/macOS versions, mouse model, connection type, steps to reproduce, and relevant logs. Remove serial numbers, private paths, and script/text payloads before sharing diagnostics.
+
+## Update and uninstall
+
+Rerun the installer to update. It preserves the configuration and attempts to restart an existing installation. It includes rollback on detected installation failures; daemon readiness verification is still planned. Recheck permissions and `openlogi status` after an upgrade.
+
+To choose a custom directory:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/HiteshGorana/openlogi-c/main/install.sh | sh -s -- --prefix "$HOME/tools/openlogi"
+```
+
+Use the same `--prefix` on later updates. To pin a version, pass `--version` followed by a published tag from the releases page.
+
+To uninstall the default prebuilt installation, first run `openlogi service disable` and stop any separately launched foreground daemon. Remove these files from `~/.local/bin`:
+
+- `openlogi`
+- `openlogid`
+- `openlogictl`
+- `openlogi_discover`
+
+Use your chosen prefix for a custom installation. Keep `~/.config/openlogi/config.toml` for a future reinstall, or remove it separately if no longer needed.
+
+## Development
+
+### Build from source
+
+Install Xcode Command Line Tools if needed:
+
+```sh
+xcode-select --install
+```
+
+Build the runtime:
+
+```sh
+git clone https://github.com/HiteshGorana/openlogi-c.git
+cd openlogi-c
+make tools
+./bin/openlogi --help
+```
+
+The build uses C99 with `-Wall -Wextra -Werror -pedantic`, macOS system frameworks, and the vendored `yyjson` and `tomlc99` libraries. Grant permissions to the source-built executable before testing real input.
+
+For a foreground development session, stop an installed daemon first, then run `./bin/openlogi daemon --verbose`. Use `./bin/openlogi status` from a second terminal. A service enabled with `./bin/openlogi service enable` points at that build directory; rebuilding or moving it affects the service.
+
+| Task | Command |
+| --- | --- |
+| Build tools and test executables | `make all` |
+| Run the C suites | `make test VERBOSE=1` |
+| Rebuild/run with ASan and UBSan | `make asan VERBOSE=1` |
+| Run offline installer checks | `sh tests/test_install.sh` |
+| Strip the built executable | `make strip` |
+| Install a source build | `make install PREFIX="$HOME/.local"` |
+| Uninstall from a source checkout | `make uninstall PREFIX="$HOME/.local"` |
+
+**Current test behavior:** some C suites invoke real macOS input injection, including desktop and media actions. Test isolation is a priority in the roadmap. Component tests do not establish hardware compatibility, and sanitizer output does not by itself prove leak freedom or complete instrumentation.
+
+The [macOS CI workflow](.github/workflows/macos.yml) builds and tests with Clang, runs installer checks, and runs ASan/UBSan. The [release workflow](.github/workflows/release.yml) tests Apple Silicon and Intel builds, packages ad-hoc-signed binaries, and publishes archives and checksums for version tags. Physical hardware and permission behavior require separate verification.
+
+### Repository map
+
+| Path | Purpose |
+| --- | --- |
+| `src/daemon/` | Startup, runtime dispatch, and shutdown. |
+| `src/cli/` | Unified CLI, setup menu, service control, and scanner. |
+| `src/hid/`, `src/platform/macos/` | HID++ protocol, mocks, IOKit transport, and app observation. |
+| `src/core/` | Configuration, gesture/button state, scrolling helpers, and lifecycle utilities. |
+| `src/hook/`, `src/inject/` | macOS input capture and action output. |
+| `src/ipc/`, `include/` | Local JSON-RPC client/server and C interfaces. |
+| `tests/` | C suites and installer regression checks. |
+| `vendor/`, `packaging/`, `scripts/` | Vendored parsers, service definitions, and release packaging. |
+
+### Local IPC
+
+The daemon exposes newline-delimited JSON-RPC over a UNIX socket at `~/.local/state/openlogi/openlogi.sock`, or `$XDG_STATE_HOME/openlogi/openlogi.sock` when set.
+
+| Method | Purpose |
+| --- | --- |
+| `openlogi.get_status` | Version, uptime, reported permissions, hook state, and foreground application. |
+| `openlogi.get_inventory` | Cached device inventory and settings. |
+| `openlogi.set_dpi` | Request a sensor DPI change. |
+| `openlogi.set_smartshift` | Request a wheel mode/threshold change. |
+| `openlogi.reload_config` | Request configuration reload. |
+| `openlogi.subscribe` | Subscribe to daemon notifications. |
+
+For example, send this request followed by a newline on a connected socket:
+
+```json
+{"jsonrpc":"2.0","method":"openlogi.get_status","params":{},"id":1}
+```
+
+### Contributing and performance
+
+Start with [improvements.md](improvements.md) for prioritized issues, integration gaps, and release gates. [AGENTS.md](AGENTS.md) describes the architecture and development contract; some described guarantees are implementation targets still being completed.
+
+Keep changes focused, add regression coverage for behavior changes, and run the relevant checks. Run `make asan` before a commit or pull request as required by the project guide. Changes to device behavior also need a recorded hardware/transport verification.
+
+Small binaries and low overhead are design goals. Earlier footprint comparisons lack a reproducible benchmark record in this tree; measure release builds on a named machine and workload before treating CPU, RAM, or latency figures as guarantees. The roadmap defines proposed performance budgets and how to measure them.
