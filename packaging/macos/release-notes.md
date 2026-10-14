@@ -1,34 +1,24 @@
-This release adds self-uninstall:
+### OpenLogi v0.1.7 — Zero-Touch App Bundle, Trackpad Pass-Through & Native Permissions
 
-```sh
-openlogi uninstall
-```
+This release brings zero-terminal operation, seamless permission handling, and fluid trackpad pass-through to OpenLogi Pure C:
 
-The command stops the login service and daemon, waits for hardware cleanup, and
-removes commands from the installation directory. Configuration is retained.
-Use `openlogi uninstall --dry-run` to preview removal. Daemons using custom lock
-files must be stopped separately.
+#### Highlights:
+1. **Zero-Touch `OpenLogi.app` Lifecycle**:
+   - Double-clicking `OpenLogi.app` automatically prompts for **Accessibility** and **Input Monitoring** permissions, opening the exact System Settings panes.
+   - Automatically writes and configures login autostart (`~/Library/LaunchAgents/io.github.openlogi.agent.plist`) with `SuccessfulExit = false` so clean stops stay stopped, while reboots and crashes auto-restart.
+   - Opening `OpenLogi.app` while already running queries live mouse status and battery percentage over IPC, offering quick **[Keep Running]**, **[Stop OpenLogi]**, and **[Uninstall]** options.
+2. **Apple Silicon & Trackpad Pass-Through**:
+   - Accurately preserves trackpad gestures (`kCGScrollWheelEventScrollPhase`, `kCGScrollWheelEventMomentumPhase`, continuous scroll).
+   - In-place scroll wheel inversion exclusively targets discrete mouse wheels without interfering with trackpad momentum.
+3. **Reliable Input Monitoring Access**:
+   - Uses official Apple `IOHIDRequestAccess` and `IOHIDCheckAccess` APIs to ensure raw HID++ Bluetooth and USB communication works reliably.
 
-Install or update OpenLogi on macOS 13 or newer:
+#### Installation:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/HiteshGorana/openlogi-c/main/install.sh | sh
 ```
 
-The installer selects Apple Silicon or Intel binaries, verifies their SHA-256 checksum,
-and installs the unified `openlogi` binary alongside backward-compatibility symlinks
-(`openlogid`, `openlogictl`, `openlogi_discover`) in `~/.local/bin`. Rerunning it updates
-to the latest release and restarts an active installation. Your TOML configuration is retained.
+Or download and open `OpenLogi.app` directly into `/Applications`.
 
-Grant `~/.local/bin/openlogi` Accessibility and Input Monitoring access in
-System Settings → Privacy & Security, then run:
-
-```sh
-~/.local/bin/openlogi service enable
-~/.local/bin/openlogi setup
-~/.local/bin/openlogi status
-```
-
-These binaries are signed locally with an ad-hoc signature. They are not notarized
-with an Apple Developer ID. macOS may require permissions to be granted again after
-an update.
+Your TOML configuration in `~/.config/openlogi/config.toml` is preserved across updates.
