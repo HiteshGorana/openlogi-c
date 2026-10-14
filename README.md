@@ -278,7 +278,7 @@ For a foreground development session, stop an installed daemon first, then run `
 | Task | Command |
 | --- | --- |
 | Build tools and test executables | `make all` |
-| Run the C suites (20 suites / 107 tests) | `make test VERBOSE=1` |
+| Run the C suites (21 suites / 114 tests) | `make test VERBOSE=1` |
 | Rebuild/run with ASan and UBSan | `make asan VERBOSE=1` |
 | Run offline installer checks | `sh tests/test_install.sh` |
 | Run offline release-publishing checks | `sh tests/test_release.sh` |
@@ -286,7 +286,7 @@ For a foreground development session, stop an installed daemon first, then run `
 | Install a source build | `make install PREFIX="$HOME/.local"` |
 | Uninstall from a source checkout | `make uninstall PREFIX="$HOME/.local"` |
 
-**Test isolation and safety:** all 20 test suites (107 tests) use dry-run mock injection and mock HID backends, ensuring tests execute safely and isolated without triggering real macOS spaces, windows, or hardware events. Vendored parsers (`yyjson`, `tomlc99`) are fully instrumented under Clang AddressSanitizer and UndefinedBehaviorSanitizer (0 leaks, 0 errors).
+**Test isolation and safety:** all 21 test suites (114 tests) use dry-run mock injection and mock HID backends, ensuring tests execute safely and isolated without triggering real macOS spaces, windows, or hardware events. Vendored parsers (`yyjson`, `tomlc99`) are fully instrumented under Clang AddressSanitizer and UndefinedBehaviorSanitizer (0 leaks, 0 errors).
 
 The [macOS CI workflow](.github/workflows/macos.yml) builds and tests with Clang, runs installer checks, and runs ASan/UBSan. The [release workflow](.github/workflows/release.yml) tests Apple Silicon and Intel builds, packages ad-hoc-signed binaries, and publishes archives and checksums for version tags. Physical hardware and permission behavior require separate verification.
 

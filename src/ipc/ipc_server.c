@@ -167,6 +167,9 @@ static yyjson_mut_val *handle_get_status(openlogi_daemon_ctx_t *ctx, yyjson_mut_
     }
     yyjson_mut_obj_add_uint(doc, res, "devices_online", online_devs);
 
+    const char *rstate = (ctx && ctx->runtime_state == RUNTIME_STATE_ACTIVE) ? "active" : "standby";
+    yyjson_mut_obj_add_str(doc, res, "runtime_state", rstate);
+
     return res;
 }
 

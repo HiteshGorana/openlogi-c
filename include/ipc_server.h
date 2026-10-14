@@ -37,9 +37,15 @@ typedef struct {
     bool online;
 } openlogi_device_status_t;
 
+typedef enum {
+    RUNTIME_STATE_STANDBY = 0,
+    RUNTIME_STATE_ACTIVE = 1
+} openlogi_runtime_state_t;
+
 typedef struct openlogi_daemon_ctx_s {
     time_t start_time;
     openlogi_config_t config;
+    openlogi_runtime_state_t runtime_state;
 
     /* Hardware state */
     openlogi_device_status_t devices[OPENLOGI_MAX_DEVICES];

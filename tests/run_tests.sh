@@ -37,14 +37,14 @@ if [ "$1" = "-v" ] || [ "$1" = "--verbose" ] || [ "$1" = "1" ] || [ "$VERBOSE" =
     VERBOSE=1
 fi
 
-TOTAL_SUITES=20
+TOTAL_SUITES=21
 PASSED_SUITES=0
 FAILED_SUITES=0
 TOTAL_TESTS=0
 
 printf "\n%b================================================================================%b\n" "$C_CYAN" "$C_RESET"
 printf "%b                     OpenLogi Pure C Test Suite Runner%b\n" "$C_BOLD" "$C_RESET"
-printf "          %b20 Test Suites  •  107 Test Cases  •  AddressSanitizer Clean%b\n" "$C_GRAY" "$C_RESET"
+printf "          %b21 Test Suites  •  114 Test Cases  •  AddressSanitizer Clean%b\n" "$C_GRAY" "$C_RESET"
 printf "%b================================================================================%b\n\n" "$C_CYAN" "$C_RESET"
 
 run_suite() {
@@ -110,6 +110,7 @@ run_suite 17 test_spaces_shortcuts          5 "macOS Spaces Switching & Shortcut
 run_suite 18 test_hires_wheel_curve         4 "HID++ 0x2121 Hi-Res Wheel & 0x2110 SmartShift Curves"
 run_suite 19 test_actions                   6 "Complete 53-Action Catalog & Workflow Engine"
 run_suite 20 test_action_queue              4 "Asynchronous Non-Blocking Action Queue"
+run_suite 21 test_lightweight_standby        7 "Lightweight Standby Transitions & Safety Invariants"
 
 printf "\n%b================================================================================%b\n" "$C_CYAN" "$C_RESET"
 if [ $FAILED_SUITES -eq 0 ]; then

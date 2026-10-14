@@ -106,6 +106,8 @@ static CGEventRef event_tap_callback(
     return event; /* Zero-overhead pass-through */
 }
 
+static pthread_cond_t g_ready_cond = PTHREAD_COND_INITIALIZER;
+
 static void *tap_thread_main(void *arg)
 {
     (void)arg;
@@ -115,6 +117,7 @@ static void *tap_thread_main(void *arg)
     CFRunLoopAddSource(g_run_loop, g_run_loop_source, kCFRunLoopCommonModes);
     CGEventTapEnable(g_tap_port, true);
     g_is_running = true;
+    pthread_cond_broadcast(&g_ready_cond);
     pthread_mutex_unlock(&g_lock);
 
     /* Run event pump until stopped */
@@ -185,8 +188,14 @@ bool hook_start(void)
         return false;
     }
 
+    /* Wait for hook thread to signal readiness (avoids startup race) */
+    while (!g_is_running) {
+        pthread_cond_wait(&g_ready_cond, &g_lock);
+    }
+
+    bool started = g_is_running;
     pthread_mutex_unlock(&g_lock);
-    return true;
+    return started;
 }
 
 void hook_stop(void)

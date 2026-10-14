@@ -176,6 +176,21 @@ void action_queue_wait_idle(void)
     pthread_mutex_unlock(&g_lock);
 }
 
+void action_queue_clear_pending(void)
+{
+    pthread_mutex_lock(&g_lock);
+    action_node_t *cur = g_head;
+    while (cur) {
+        action_node_t *next = cur->next;
+        free_node(cur);
+        cur = next;
+    }
+    g_head = NULL;
+    g_tail = NULL;
+    g_queue_len = 0;
+    pthread_mutex_unlock(&g_lock);
+}
+
 void action_queue_shutdown(void)
 {
     pthread_mutex_lock(&g_lock);

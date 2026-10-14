@@ -46,6 +46,12 @@ size_t action_queue_pending_count(void);
 void action_queue_wait_idle(void);
 
 /**
+ * @brief Immediately drop and free all pending unexecuted actions from queue.
+ * Does not cancel an action that is already executing on the worker thread.
+ */
+void action_queue_clear_pending(void);
+
+/**
  * @brief Stop worker thread and free all pending actions in queue.
  */
 void action_queue_shutdown(void);

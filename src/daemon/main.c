@@ -22,6 +22,7 @@
 #include "armed_session.h"
 #include "device_reapply.h"
 #include "hires_wheel.h"
+#include "daemon_state.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,6 +43,8 @@ static char g_lock_file[512] = { 0 };
 static char g_session_file[512] = { 0 };
 static bool g_verbose = false;
 static button_runtime_t g_button_rt;
+static volatile bool g_pending_hotplug_probe = false;
+static volatile bool g_pending_reconcile = false;
 
 static uint64_t daemon_get_time_ms(void)
 {
@@ -51,6 +54,11 @@ static uint64_t daemon_get_time_ms(void)
 }
 
 static bool daemon_reload_config(openlogi_daemon_ctx_t *ctx);
+static void daemon_probe_hardware(openlogi_daemon_ctx_t *ctx);
+static size_t count_online_usable_devices(const openlogi_daemon_ctx_t *ctx);
+static void daemon_apply_diversion(openlogi_daemon_ctx_t *ctx);
+static void daemon_undivert_all(void);
+static void daemon_reconcile_runtime_state(openlogi_daemon_ctx_t *ctx);
 
 static void on_config_reloaded(const char *filepath, void *user_data)
 {
@@ -391,6 +399,158 @@ static void on_hid_report_event(hid_device_t *dev, const hidpp_raw_report_t *raw
     }
 }
 
+static size_t count_online_usable_devices(const openlogi_daemon_ctx_t *ctx)
+{
+    if (!ctx) return 0;
+    size_t count = 0;
+    for (size_t i = 0; i < ctx->device_count; i++) {
+        if (ctx->devices[i].online && g_live_handles[i].dev_handle != NULL) {
+            count++;
+        }
+    }
+    return count;
+}
+
+static void daemon_apply_diversion(openlogi_daemon_ctx_t *ctx)
+{
+    if (!ctx || !hook_is_running()) return;
+
+    for (size_t i = 0; i < ctx->device_count; i++) {
+        if (!ctx->devices[i].online || !g_live_handles[i].dev_handle) continue;
+        if (g_live_handles[i].feat_reprog == 0) continue;
+
+        const config_device_t *cdev = NULL;
+        for (size_t cd = 0; cd < ctx->config.device_count; cd++) {
+            if (strcmp(ctx->config.devices[cd].device_key, ctx->devices[i].device_key) == 0 ||
+                strcmp(ctx->config.devices[cd].device_key, "default") == 0) {
+                cdev = &ctx->config.devices[cd];
+                break;
+            }
+        }
+        if (!cdev && ctx->config.device_count > 0) {
+            cdev = &ctx->config.devices[0];
+        }
+
+        capture_spec_t plan;
+        capture_plan_resolve(cdev, &plan);
+        if (plan.divert_count == 0) {
+            capture_spec_add_cid(&plan, HIDPP_CID_GESTURE_BUTTON);
+            capture_spec_add_cid(&plan, HIDPP_CID_MODE_SHIFT_SMARTSHIFT);
+            plan.wants_raw_xy = true;
+        }
+
+        for (size_t c = 0; c < plan.divert_count; c++) {
+            uint16_t cid = plan.divert_cids[c];
+            bool raw_xy = (cid == CID_GESTURE_BUTTON || cid == HIDPP_CID_GESTURE_BUTTON) ? plan.wants_raw_xy : false;
+            hidpp_reprog_set_reporting(
+                g_live_handles[i].dev_handle,
+                g_live_handles[i].device_index,
+                g_live_handles[i].feat_reprog,
+                g_live_handles[i].sw_id,
+                cid,
+                true,
+                raw_xy
+            );
+        }
+
+        hid_register_report_callback(g_live_handles[i].dev_handle, on_hid_report_event, ctx);
+
+        if (g_live_handles[i].secondary_handle) {
+            hidpp_reprog_set_reporting(
+                g_live_handles[i].secondary_handle,
+                g_live_handles[i].device_index,
+                g_live_handles[i].feat_reprog,
+                g_live_handles[i].sw_id,
+                HIDPP_CID_GESTURE_BUTTON,
+                true,
+                true
+            );
+            hidpp_reprog_set_reporting(
+                g_live_handles[i].secondary_handle,
+                g_live_handles[i].device_index,
+                g_live_handles[i].feat_reprog,
+                g_live_handles[i].sw_id,
+                HIDPP_CID_MODE_SHIFT_SMARTSHIFT,
+                true,
+                true
+            );
+            hid_register_report_callback(g_live_handles[i].secondary_handle, on_hid_report_event, ctx);
+        }
+    }
+}
+
+static void daemon_undivert_all(void)
+{
+    hidpp_diversion_teardown_all();
+}
+
+static void daemon_reconcile_runtime_state(openlogi_daemon_ctx_t *ctx)
+{
+    if (!ctx) return;
+
+    size_t usable = count_online_usable_devices(ctx);
+    openlogi_runtime_state_t target = daemon_compute_target_state(usable);
+
+    if (!daemon_state_should_transition(ctx->runtime_state, target)) {
+        return; /* Idempotent: state already reconciled */
+    }
+
+    if (target == RUNTIME_STATE_ACTIVE) {
+        printf("[openlogid] Usable Logitech device online (%zu device%s); activating input handling...\n",
+               usable, usable > 1 ? "s" : "");
+
+        /* 1. Start foreground application profile watcher */
+        if (!app_watch_is_running()) {
+            app_watch_start(on_app_changed, NULL);
+        }
+
+        /* 2. Start OS event tap hook */
+        bool hook_ok = false;
+        if (!hook_is_running()) {
+            hook_ok = hook_init(on_hook_event, NULL) && hook_start();
+            if (hook_ok) {
+                printf("[openlogid] OS input interception hook active.\n");
+            } else {
+                printf("[openlogid] Notice: Accessibility/Input Monitoring permission not yet granted; hook in passive mode.\n");
+            }
+        } else {
+            hook_ok = true;
+        }
+
+        /* 3. Apply hardware diversion only if hook is functional */
+        if (hook_ok) {
+            daemon_apply_diversion(ctx);
+        }
+
+        ctx->runtime_state = RUNTIME_STATE_ACTIVE;
+        ipc_server_broadcast_event("runtime_state_changed", "{\"state\":\"active\"}");
+    } else {
+        printf("[openlogid] No usable devices online; entering lightweight standby...\n");
+
+        /* 1. Invalidate device runtime state */
+        button_runtime_cancel_all(&g_button_rt, BUTTON_END_CANCELED_INVALIDATED);
+        swipe_accumulator_init(&g_gesture_acc);
+        g_active_gesture_btn = CONFIG_BUTTON_UNKNOWN;
+        action_queue_clear_pending();
+
+        /* 2. Disarm any accessible hardware diversion */
+        daemon_undivert_all();
+
+        /* 3. Stop OS input hook */
+        if (hook_is_running()) {
+            hook_stop();
+        }
+
+        /* 4. Stop foreground application profile watcher */
+        if (app_watch_is_running()) {
+            app_watch_stop();
+        }
+
+        ctx->runtime_state = RUNTIME_STATE_STANDBY;
+        ipc_server_broadcast_event("runtime_state_changed", "{\"state\":\"standby\"}");
+    }
+}
+
 static void on_hotplug_event(const hid_device_info_t *info, bool connected, void *user_data);
 
 static void daemon_probe_hardware(openlogi_daemon_ctx_t *ctx)
@@ -441,27 +601,6 @@ static void daemon_probe_hardware(openlogi_daemon_ctx_t *ctx)
                         hid_device_t *sec_dev = hid_open(info->transport_path);
                         if (sec_dev) {
                             g_live_handles[d].secondary_handle = sec_dev;
-                            if (g_live_handles[d].feat_reprog != 0) {
-                                hidpp_reprog_set_reporting(
-                                    sec_dev,
-                                    g_live_handles[d].device_index,
-                                    g_live_handles[d].feat_reprog,
-                                    g_live_handles[d].sw_id,
-                                    HIDPP_CID_GESTURE_BUTTON,
-                                    true,
-                                    true
-                                );
-                                hidpp_reprog_set_reporting(
-                                    sec_dev,
-                                    g_live_handles[d].device_index,
-                                    g_live_handles[d].feat_reprog,
-                                    g_live_handles[d].sw_id,
-                                    HIDPP_CID_MODE_SHIFT_SMARTSHIFT,
-                                    true,
-                                    true
-                                );
-                            }
-                            hid_register_report_callback(sec_dev, on_hid_report_event, ctx);
                         }
                     }
                     break;
@@ -517,33 +656,6 @@ static void daemon_probe_hardware(openlogi_daemon_ctx_t *ctx)
                 cdev = &ctx->config.devices[0];
             }
 
-            /* Resolve capture plan for this device */
-            if (probed.feat_reprog_controls != 0) {
-                capture_spec_t plan;
-                capture_plan_resolve(cdev, &plan);
-
-                if (plan.divert_count == 0) {
-                    capture_spec_add_cid(&plan, HIDPP_CID_GESTURE_BUTTON);
-                    capture_spec_add_cid(&plan, HIDPP_CID_MODE_SHIFT_SMARTSHIFT);
-                    plan.wants_raw_xy = true;
-                }
-
-                for (size_t c = 0; c < plan.divert_count; c++) {
-                    uint16_t cid = plan.divert_cids[c];
-                    bool raw_xy = (cid == CID_GESTURE_BUTTON || cid == HIDPP_CID_GESTURE_BUTTON) ? plan.wants_raw_xy : false;
-                    hidpp_reprog_set_reporting(
-                        dev,
-                        HIDPP_DEVICE_RECEIVER,
-                        probed.feat_reprog_controls,
-                        HIDPP_DEFAULT_SW_ID,
-                        cid,
-                        true,
-                        raw_xy
-                    );
-                }
-
-                hid_register_report_callback(dev, on_hid_report_event, ctx);
-            }
 
             /* Configure hardware hi-res wheel inversion if Feature 0x2121 is supported */
             if (probed.feat_hires_wheel != 0) {
@@ -604,6 +716,10 @@ static void daemon_probe_hardware(openlogi_daemon_ctx_t *ctx)
             }
         }
     }
+
+    if (ctx->runtime_state == RUNTIME_STATE_ACTIVE && hook_is_running()) {
+        daemon_apply_diversion(ctx);
+    }
 }
 
 static void on_hotplug_event(const hid_device_info_t *info, bool connected, void *user_data)
@@ -636,21 +752,28 @@ static void on_hotplug_event(const hid_device_info_t *info, bool connected, void
                     hidpp_diversion_untrack_device(g_live_handles[i].secondary_handle);
                     g_live_handles[i].secondary_handle = NULL;
                 }
+                /* Per-device disconnect cleanup */
+                button_runtime_cancel_all(&g_button_rt, BUTTON_END_CANCELED_INVALIDATED);
+                swipe_accumulator_init(&g_gesture_acc);
+                g_active_gesture_btn = CONFIG_BUTTON_UNKNOWN;
+                action_queue_clear_pending();
+
                 char payload[128];
                 snprintf(payload, sizeof(payload), "{\"device_key\":\"%s\",\"online\":false}", ctx->devices[i].device_key);
                 ipc_server_broadcast_event("device_disconnected", payload);
             }
         }
+        g_pending_reconcile = true;
     } else {
         if (g_verbose) {
             printf("[openlogid] Hotplug: device connected: %s (%s)\n",
                    info->product_name[0] ? info->product_name : "Logitech device",
                    info->transport_path);
         }
-        daemon_probe_hardware(ctx);
         char payload[128];
         snprintf(payload, sizeof(payload), "{\"product\":\"%s\",\"online\":true}", info->product_name);
         ipc_server_broadcast_event("device_connected", payload);
+        g_pending_hotplug_probe = true;
     }
 }
 
@@ -743,6 +866,10 @@ static bool daemon_reload_config(openlogi_daemon_ctx_t *ctx)
     config_free(&ctx->config);
     ctx->config = *new_cfg;
     free(new_cfg);
+
+    if (ctx->runtime_state == RUNTIME_STATE_ACTIVE && hook_is_running()) {
+        daemon_apply_diversion(ctx);
+    }
     return true;
 }
 
@@ -848,6 +975,7 @@ int daemon_main(int argc, char **argv)
     g_daemon_ctx.set_dpi = daemon_set_dpi;
     g_daemon_ctx.set_smartshift = daemon_set_smartshift;
     g_daemon_ctx.reload_config = daemon_reload_config;
+    g_daemon_ctx.runtime_state = RUNTIME_STATE_STANDBY;
 
     /* 4. Load Configuration */
     char cfg_err[256];
@@ -869,46 +997,97 @@ int daemon_main(int argc, char **argv)
         printf("[openlogid] Config file hot-reload watcher active.\n");
     }
 
-    /* 7. Start Foreground App Watcher */
-    if (app_watch_start(on_app_changed, NULL)) {
-        printf("[openlogid] Foreground application profile watcher active.\n");
-    }
-
-    /* 8. Start OS Event Tap Hook */
-    if (hook_init(on_hook_event, NULL) && hook_start()) {
-        printf("[openlogid] OS input interception hook installed.\n");
-    } else {
-        printf("[openlogid] Notice: Accessibility permission not yet granted; hook in passive mode.\n");
-    }
-
-    /* 9. Start Background Hotplug Monitor & Probe Connected Hardware */
+    /* 7. Start Background Hotplug Monitor & Probe Connected Hardware */
     hid_start_hotplug_monitor(on_hotplug_event, &g_daemon_ctx);
     daemon_probe_hardware(&g_daemon_ctx);
+    daemon_reconcile_runtime_state(&g_daemon_ctx);
 
-    printf("[openlogid] Daemon initialized successfully. Ready for clients.\n");
+    printf("[openlogid] Daemon initialized successfully. Ready for clients (State: %s).\n",
+           (g_daemon_ctx.runtime_state == RUNTIME_STATE_ACTIVE) ? "ACTIVE" : "STANDBY");
 
-    /* Main Daemon Loop */
-    int loop_tick = 0;
-    while (!signals_should_exit()) {
+    /* Setup signal wakeup source on macOS CFRunLoop */
 #ifdef __APPLE__
-        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, false);
-#else
-        usleep(50000); /* 50ms tick */
-#endif
-        uint64_t now_ms = daemon_get_time_ms();
-        button_runtime_tick(&g_button_rt, now_ms);
-
-        loop_tick++;
-        /* Check foreground application profile every 2 ticks (~100ms @ 50ms tick) */
-        if (loop_tick % 2 == 0) {
-            app_watch_tick();
-        }
-
-        /* Periodically re-scan hardware if no devices were online at launch (every ~2 seconds = 40 ticks @ 50ms) */
-        if (g_daemon_ctx.device_count == 0 && (loop_tick % 40 == 0)) {
-            daemon_probe_hardware(&g_daemon_ctx);
+    CFFileDescriptorContext fd_ctx = { 0, NULL, NULL, NULL, NULL };
+    int sig_fd = signals_get_wakeup_fd();
+    CFFileDescriptorRef sig_cf_fd = NULL;
+    CFRunLoopSourceRef sig_source = NULL;
+    if (sig_fd >= 0) {
+        sig_cf_fd = CFFileDescriptorCreate(kCFAllocatorDefault, sig_fd, false, NULL, &fd_ctx);
+        if (sig_cf_fd) {
+            sig_source = CFFileDescriptorCreateRunLoopSource(kCFAllocatorDefault, sig_cf_fd, 0);
+            if (sig_source) {
+                CFRunLoopAddSource(CFRunLoopGetCurrent(), sig_source, kCFRunLoopDefaultMode);
+            }
+            CFFileDescriptorEnableCallBacks(sig_cf_fd, kCFFileDescriptorReadCallBack);
         }
     }
+#endif
+
+    uint64_t last_app_tick_ms = 0;
+    uint64_t last_standby_scan_ms = 0;
+
+    /* Main Daemon Loop */
+    while (!signals_should_exit()) {
+        CFTimeInterval timeout = (g_daemon_ctx.runtime_state == RUNTIME_STATE_ACTIVE) ? 0.05 : 2.0;
+#ifdef __APPLE__
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, timeout, false);
+#else
+        if (timeout >= 1.0) {
+            usleep(1000000);
+        } else {
+            usleep(50000);
+        }
+#endif
+        if (signals_should_exit()) break;
+
+        /* Process pending hotplug / state changes on main loop thread */
+        if (g_pending_hotplug_probe) {
+            g_pending_hotplug_probe = false;
+            daemon_probe_hardware(&g_daemon_ctx);
+            daemon_reconcile_runtime_state(&g_daemon_ctx);
+            if (g_daemon_ctx.runtime_state == RUNTIME_STATE_ACTIVE) {
+                daemon_apply_diversion(&g_daemon_ctx);
+            }
+        } else if (g_pending_reconcile) {
+            g_pending_reconcile = false;
+            daemon_reconcile_runtime_state(&g_daemon_ctx);
+        }
+
+        uint64_t now_ms = daemon_get_time_ms();
+
+        if (g_daemon_ctx.runtime_state == RUNTIME_STATE_ACTIVE) {
+            button_runtime_tick(&g_button_rt, now_ms);
+
+            if (now_ms >= last_app_tick_ms + 100) {
+                last_app_tick_ms = now_ms;
+                app_watch_tick();
+            }
+        } else {
+            /* In STANDBY: skip button ticks, app polling, and active scroll math completely.
+             * Perform bounded fallback hardware rescan every 5 seconds for sleeping paired devices. */
+            if (now_ms >= last_standby_scan_ms + 5000) {
+                last_standby_scan_ms = now_ms;
+                daemon_probe_hardware(&g_daemon_ctx);
+                daemon_reconcile_runtime_state(&g_daemon_ctx);
+                if (g_daemon_ctx.runtime_state == RUNTIME_STATE_ACTIVE) {
+                    daemon_apply_diversion(&g_daemon_ctx);
+                }
+            }
+        }
+    }
+
+#ifdef __APPLE__
+    if (sig_source) {
+        CFRunLoopRemoveSource(CFRunLoopGetCurrent(), sig_source, kCFRunLoopDefaultMode);
+        CFRelease(sig_source);
+        sig_source = NULL;
+    }
+    if (sig_cf_fd) {
+        CFFileDescriptorInvalidate(sig_cf_fd);
+        CFRelease(sig_cf_fd);
+        sig_cf_fd = NULL;
+    }
+#endif
 
     printf("\n[openlogid] Termination signal received. Performing graceful shutdown...\n");
 

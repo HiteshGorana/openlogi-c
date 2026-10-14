@@ -34,6 +34,12 @@ void signals_teardown(void);
  */
 bool signals_should_exit(void);
 
+/**
+ * @brief Get the read end of the async-signal-safe wakeup self-pipe.
+ * Returns fd >= 0, or -1 if pipe is not active.
+ */
+int signals_get_wakeup_fd(void);
+
 #ifdef __cplusplus
 }
 #endif

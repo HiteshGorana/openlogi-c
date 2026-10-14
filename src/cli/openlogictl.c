@@ -118,6 +118,12 @@ static int cmd_status(void)
     printf("Protocol Version:    %s\n", yyjson_get_str(yyjson_obj_get(res, "protocol")));
     printf("Agent Version:       %s\n", yyjson_get_str(yyjson_obj_get(res, "version")));
 
+    const char *rstate = yyjson_get_str(yyjson_obj_get(res, "runtime_state"));
+    if (rstate) {
+        bool is_act = (strcmp(rstate, "active") == 0);
+        printf("Runtime State:       %s\n", is_act ? COLOR_GREEN "ACTIVE" COLOR_RESET : COLOR_YELLOW "STANDBY" COLOR_RESET);
+    }
+
     bool hook_inst = yyjson_get_bool(yyjson_obj_get(res, "hook_installed"));
     printf("OS Input Hook:       %s\n", hook_inst ? COLOR_GREEN "ACTIVE (Event Tap installed)" COLOR_RESET : COLOR_YELLOW "PASSIVE" COLOR_RESET);
 
