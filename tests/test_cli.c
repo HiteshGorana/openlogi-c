@@ -270,7 +270,16 @@ static void test_cli_subcommands(void)
     ret = system(cmd);
     assert(ret == 0);
 
-    /* 13. openlogictl options & schema */
+    /* 13. openlogictl stop */
+    snprintf(cmd, sizeof(cmd), "%s stop > /dev/null 2>&1", cli);
+    ret = system(cmd);
+    assert(ret == 0);
+
+    snprintf(cmd, sizeof(cmd), "%s --json stop > /dev/null 2>&1", cli);
+    ret = system(cmd);
+    assert(ret == 0);
+
+    /* 14. openlogictl options & schema */
     snprintf(cmd, sizeof(cmd), "%s options > /dev/null 2>&1", cli);
     ret = system(cmd);
     assert(ret == 0);
@@ -333,12 +342,17 @@ static void test_unified_openlogi_dispatch(void)
     ret = system(cmd);
     assert(ret == 0);
 
-    /* 5. openlogi discover */
+    /* 5. openlogi stop */
+    snprintf(cmd, sizeof(cmd), "%s stop > /dev/null 2>&1", unified);
+    ret = system(cmd);
+    assert(ret == 0);
+
+    /* 6. openlogi discover */
     snprintf(cmd, sizeof(cmd), "%s discover > /dev/null 2>&1", unified);
     ret = system(cmd);
     assert(ret == 0);
 
-    /* 6. symlink openlogi_discover */
+    /* 7. symlink openlogi_discover */
     const char *disc = "bin/openlogi_discover";
     if (access(disc, X_OK) == 0) {
         snprintf(cmd, sizeof(cmd), "%s > /dev/null 2>&1", disc);

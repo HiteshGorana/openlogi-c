@@ -1133,6 +1133,8 @@ static void print_xml_text(FILE *file, const char *text)
 }
 #endif
 
+static int cmd_stop(void);
+
 /* --- Subcommand: autostart --- */
 static int cmd_autostart(int argc, char **argv)
 {
@@ -1262,8 +1264,24 @@ static int cmd_autostart(int argc, char **argv)
             printf("    Removed LaunchAgent: %s\n", plist_path);
         }
         return 0;
+    } else if (strcmp(action, "stop") == 0) {
+        return cmd_stop();
+    } else if (strcmp(action, "start") == 0) {
+        char domain[64];
+        snprintf(domain, sizeof(domain), "gui/%u", (unsigned)getuid());
+        if (run_launchctl("bootstrap", domain, plist_path, false) != 0) {
+            fprintf(stderr, "[-] Could not start LaunchAgent at %s\n", plist_path);
+            return 1;
+        }
+
+        if (g_json_output) {
+            printf("{\"success\":true,\"action\":\"started\"}\n");
+        } else {
+            printf(COLOR_BOLD COLOR_GREEN "[+] OpenLogi service started." COLOR_RESET "\n");
+        }
+        return 0;
     } else {
-        fprintf(stderr, "[-] Unknown action '%s'. Use 'status', 'enable', or 'disable'.\n", action);
+        fprintf(stderr, "[-] Unknown action '%s'. Use 'status', 'enable', 'disable', 'start', or 'stop'.\n", action);
         return 1;
     }
 #else
@@ -1301,8 +1319,18 @@ static int cmd_autostart(int argc, char **argv)
         unlink(service_path);
         printf(COLOR_BOLD COLOR_GREEN "[+] Autostart disabled." COLOR_RESET "\n");
         return 0;
+    } else if (strcmp(action, "stop") == 0) {
+        return cmd_stop();
+    } else if (strcmp(action, "start") == 0) {
+        (void)system("systemctl --user start openlogid.service 2>/dev/null");
+        if (g_json_output) {
+            printf("{\"success\":true,\"action\":\"started\"}\n");
+        } else {
+            printf(COLOR_BOLD COLOR_GREEN "[+] OpenLogi service started." COLOR_RESET "\n");
+        }
+        return 0;
     } else {
-        fprintf(stderr, "[-] Unknown action '%s'. Use 'status', 'enable', or 'disable'.\n", action);
+        fprintf(stderr, "[-] Unknown action '%s'. Use 'status', 'enable', 'disable', 'start', or 'stop'.\n", action);
         return 1;
     }
 #endif
@@ -1354,6 +1382,86 @@ static int uninstall_stop_daemon(void)
     close(fd);
     fprintf(stderr, "[-] Daemon shutdown timed out. Installation retained; try again later.\n");
     return 1;
+}
+
+static int cmd_stop(void)
+{
+    char path[512];
+    const char *state = getenv("XDG_STATE_HOME");
+    const char *home = getenv("HOME");
+    int n = state && state[0]
+        ? snprintf(path, sizeof(path), "%s/openlogi/agent.lock", state)
+        : snprintf(path, sizeof(path), "%s/.local/state/openlogi/agent.lock", home);
+    if (n < 0 || (size_t)n >= sizeof(path)) {
+        snprintf(path, sizeof(path), "/tmp/openlogid.lock");
+    }
+
+    bool service_stopped = false;
+#ifdef __APPLE__
+    char target[128];
+    snprintf(target, sizeof(target), "gui/%u/io.github.openlogi.agent", (unsigned)getuid());
+    if (run_launchctl("print", target, NULL, true) == 0) {
+        if (run_launchctl("bootout", target, NULL, true) == 0) {
+            service_stopped = true;
+        }
+    }
+#else
+    if (system("systemctl --user is-active --quiet openlogid.service 2>/dev/null") == 0) {
+        if (system("systemctl --user stop openlogid.service 2>/dev/null") == 0) {
+            service_stopped = true;
+        }
+    }
+#endif
+
+    int fd = open(path, O_RDONLY);
+    pid_t pid = single_instance_read_pid(path);
+    if (pid <= 1) {
+        pid = single_instance_read_pid("/tmp/openlogid.lock");
+    }
+
+    bool pid_stopped = false;
+    if (pid > 1 && kill(pid, 0) == 0) {
+        if (kill(pid, SIGTERM) == 0) {
+            if (fd >= 0) {
+                for (int i = 0; i < 200; i++) {
+                    if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
+                        pid_stopped = true;
+                        break;
+                    }
+                    usleep(10000);
+                }
+            } else {
+                for (int i = 0; i < 40; i++) {
+                    usleep(50000);
+                    if (kill(pid, 0) != 0) {
+                        pid_stopped = true;
+                        break;
+                    }
+                }
+            }
+            if (!pid_stopped && kill(pid, 0) == 0) {
+                kill(pid, SIGKILL);
+                pid_stopped = true;
+            }
+        }
+    }
+    if (fd >= 0) close(fd);
+
+    if (service_stopped || pid_stopped) {
+        if (g_json_output) {
+            printf("{\"success\":true,\"stopped\":true,\"pid\":%d}\n", (int)pid);
+        } else {
+            printf(COLOR_BOLD COLOR_GREEN "[+] OpenLogi daemon stopped successfully." COLOR_RESET "\n");
+        }
+        return 0;
+    }
+
+    if (g_json_output) {
+        printf("{\"success\":false,\"stopped\":false,\"message\":\"daemon is not running\"}\n");
+    } else {
+        printf(COLOR_YELLOW "[*] OpenLogi daemon is not running." COLOR_RESET "\n");
+    }
+    return 0;
 }
 
 static int cmd_uninstall(int argc, char **argv)
@@ -1435,6 +1543,7 @@ static void print_usage(const char *progname)
     printf("Commands:\n");
     printf("  uninstall [--dry-run]          Remove this installation; keep configuration\n");
     printf("  status                         Show daemon health, permissions, and active app\n");
+    printf("  stop                           Stop running background daemon or service\n");
     printf("  list, devices, inventory       List connected devices and properties\n");
     printf("  scroll [get|invert|res|smooth] Inspect or configure mouse scroll & wheel settings\n");
     printf("  dpi get                        Get current sensor DPI\n");
@@ -1447,7 +1556,7 @@ static void print_usage(const char *progname)
     printf("  reload                         Hot-reload config.toml immediately\n");
     printf("  monitor                        Stream real-time intercepted events and gestures\n");
     printf("  setup                          Launch interactive ANSI terminal setup wizard\n");
-    printf("  autostart [status|enable|disable] Configure automatic login autostart\n\n");
+    printf("  autostart, service [status|enable|disable|start|stop] Configure automatic login autostart\n\n");
     printf("Examples:\n");
     printf("  %s scroll invert toggle         # Invert/un-invert mouse wheel scroll direction\n", progname);
     printf("  %s scroll resolution high      # Enable fine-grained hi-res scrolling\n", progname);
@@ -1495,6 +1604,8 @@ int ctl_main(int argc, char **argv)
 
     if (strcmp(cmd, "uninstall") == 0) {
         return cmd_uninstall(sub_argc, sub_argv);
+    } else if (strcmp(cmd, "stop") == 0) {
+        return cmd_stop();
     } else if (strcmp(cmd, "status") == 0) {
         return cmd_status();
     } else if (strcmp(cmd, "list") == 0 || strcmp(cmd, "inventory") == 0 || strcmp(cmd, "devices") == 0) {

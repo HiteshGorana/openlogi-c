@@ -23,8 +23,9 @@ static void print_unified_help(const char *progname)
     printf("Usage: %s <command> [arguments] [options]\n\n", progname);
     printf("Core Commands:\n");
     printf("  daemon                         Run background HID++ driver (options: -d/--daemon, -v)\n");
+    printf("  stop                           Stop running background daemon or service\n");
     printf("  uninstall [--dry-run]          Remove this installation; keep configuration\n");
-    printf("  service [enable|disable|status] Manage login autostart service (launchd/systemd)\n");
+    printf("  service [status|enable|disable|start|stop] Manage login autostart service (launchd/systemd)\n");
     printf("  discover, scan                 Direct hardware diagnostic inspection and register probe\n");
     printf("  status                         Show daemon health, uptime, permissions, and active app\n");
     printf("  list, devices                  List connected Logitech devices, battery, and sensor state\n");
