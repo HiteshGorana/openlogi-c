@@ -28,6 +28,7 @@
 #ifdef __APPLE__
 #include <ApplicationServices/ApplicationServices.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <IOKit/hidsystem/IOHIDLib.h>
 extern bool CGRequestListenEventAccess(void);
 extern bool CGPreflightListenEventAccess(void);
 #endif
@@ -1478,7 +1479,7 @@ static void request_macos_permissions(const char *binary)
 {
 #ifdef __APPLE__
     bool acc = AXIsProcessTrusted();
-    bool inp = CGPreflightListenEventAccess();
+    bool inp = (IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted);
 
     if (!acc) {
         const void *keys[] = { kAXTrustedCheckOptionPrompt };
@@ -1497,6 +1498,7 @@ static void request_macos_permissions(const char *binary)
         }
     }
     if (!inp) {
+        IOHIDRequestAccess(kIOHIDRequestTypeListenEvent);
         CGRequestListenEventAccess();
     }
 
@@ -1518,7 +1520,7 @@ static bool wait_for_macos_permissions(ipc_client_t *client, int timeout_seconds
 {
 #ifdef __APPLE__
     bool cli_acc = AXIsProcessTrusted();
-    bool cli_inp = CGPreflightListenEventAccess();
+    bool cli_inp = (IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted);
 
     bool daemon_acc = false;
     bool daemon_inp = false;
@@ -1545,7 +1547,7 @@ static bool wait_for_macos_permissions(ipc_client_t *client, int timeout_seconds
 
     while (waited_ms < total_ms) {
         cli_acc = AXIsProcessTrusted();
-        cli_inp = CGPreflightListenEventAccess();
+        cli_inp = (IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted);
 
         if (client) {
             if (client->fd < 0) {

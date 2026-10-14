@@ -10,6 +10,7 @@
 
 #include <IOKit/hid/IOHIDManager.h>
 #include <IOKit/hid/IOHIDKeys.h>
+#include <IOKit/hidsystem/IOHIDLib.h>
 #include <IOKit/IOKitLib.h>
 #include <CoreFoundation/CoreFoundation.h>
 
@@ -367,7 +368,8 @@ int hid_transport_init(void)
 
     IOReturn ret = IOHIDManagerOpen(g_hid_manager, kIOHIDOptionsTypeNone);
     if (ret != kIOReturnSuccess) {
-        /* Open failed - likely Accessibility or Input Monitoring permission denied */
+        /* Open failed - request access from user so macOS registers the app in System Settings */
+        IOHIDRequestAccess(kIOHIDRequestTypeListenEvent);
         IOHIDManagerUnscheduleFromRunLoop(g_hid_manager, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
         CFRelease(g_hid_manager);
         g_hid_manager = NULL;

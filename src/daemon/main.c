@@ -35,6 +35,7 @@
 #ifdef __APPLE__
 #include <CoreFoundation/CoreFoundation.h>
 #include <ApplicationServices/ApplicationServices.h>
+#include <IOKit/hidsystem/IOHIDLib.h>
 extern bool CGPreflightListenEventAccess(void);
 extern bool CGRequestListenEventAccess(void);
 #endif
@@ -1028,7 +1029,7 @@ int daemon_main(int argc, char **argv)
     /* 7. Check and request system permissions if needed (macOS) */
 #ifdef __APPLE__
     bool has_ax = AXIsProcessTrusted();
-    bool has_inp = CGPreflightListenEventAccess();
+    bool has_inp = (IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted);
     if (!has_ax) {
         const void *keys[] = { kAXTrustedCheckOptionPrompt };
         const void *values[] = { kCFBooleanTrue };
@@ -1046,6 +1047,7 @@ int daemon_main(int argc, char **argv)
         }
     }
     if (!has_inp) {
+        IOHIDRequestAccess(kIOHIDRequestTypeListenEvent);
         CGRequestListenEventAccess();
     }
     if (!has_ax || !has_inp) {

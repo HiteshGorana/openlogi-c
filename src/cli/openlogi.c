@@ -57,13 +57,14 @@ static void print_unified_help(const char *progname)
 #ifdef __APPLE__
 #include <ApplicationServices/ApplicationServices.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <IOKit/hidsystem/IOHIDLib.h>
 #include <stdlib.h>
 #include <stdbool.h>
 
 static void macos_prompt_app_permissions(void)
 {
     bool acc = AXIsProcessTrusted();
-    bool inp = CGPreflightListenEventAccess();
+    bool inp = (IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted);
 
     if (!acc) {
         const void *keys[] = { kAXTrustedCheckOptionPrompt };
@@ -83,8 +84,13 @@ static void macos_prompt_app_permissions(void)
         (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility\" 2>/dev/null");
     }
     if (!inp) {
+        IOHIDRequestAccess(kIOHIDRequestTypeListenEvent);
         CGRequestListenEventAccess();
         (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent\" 2>/dev/null");
+    }
+
+    if (!acc || !inp) {
+        (void)system("osascript -e 'display alert \"OpenLogi Setup Required\" message \"OpenLogi requires Accessibility and Input Monitoring permissions in System Settings to control your Logitech mouse.\n\nPlease toggle ON OpenLogi in the System Settings window that opened.\" as informational buttons {\"OK\"} default button \"OK\"' 2>/dev/null &");
     }
 }
 #endif
