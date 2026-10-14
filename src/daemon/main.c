@@ -15,6 +15,13 @@
 #include "hidpp_reprog.h"
 #include "single_instance.h"
 #include "subcommands.h"
+#include "button_runtime.h"
+#include "capture_plan.h"
+#include "action_queue.h"
+#include "scroll_pipeline.h"
+#include "armed_session.h"
+#include "device_reapply.h"
+#include "hires_wheel.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +30,7 @@
 #include <getopt.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #ifdef __APPLE__
 #include <CoreFoundation/CoreFoundation.h>
 #endif
@@ -31,14 +39,28 @@ static openlogi_daemon_ctx_t g_daemon_ctx;
 static char g_config_file[512] = { 0 };
 static char g_socket_file[512] = { 0 };
 static char g_lock_file[512] = { 0 };
+static char g_session_file[512] = { 0 };
 static bool g_verbose = false;
+static button_runtime_t g_button_rt;
+
+static uint64_t daemon_get_time_ms(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint64_t)tv.tv_sec * 1000 + (uint64_t)tv.tv_usec / 1000;
+}
 
 static void on_config_reloaded(const char *filepath, void *user_data)
 {
     (void)user_data;
     printf("[openlogid] Configuration file modified (%s). Hot-reloading...\n", filepath);
     char err[256];
-    if (config_load_file(filepath, &g_daemon_ctx.config, err, sizeof(err))) {
+    openlogi_config_t new_cfg;
+    memset(&new_cfg, 0, sizeof(new_cfg));
+    if (config_load_file(filepath, &new_cfg, err, sizeof(err))) {
+        button_runtime_cancel_all(&g_button_rt, BUTTON_END_CANCELED_INVALIDATED);
+        config_free(&g_daemon_ctx.config);
+        g_daemon_ctx.config = new_cfg;
         printf("[openlogid] Configuration reloaded successfully (schema version %u).\n",
                g_daemon_ctx.config.schema_version);
         ipc_server_broadcast_event("config_reloaded", "{\"success\":true}");
@@ -53,6 +75,7 @@ static void on_app_changed(const char *app_id, void *user_data)
     if (g_verbose) {
         printf("[openlogid] Active foreground app: %s\n", app_id);
     }
+    button_runtime_cancel_all(&g_button_rt, BUTTON_END_CANCELED_INVALIDATED);
     char payload[512];
     snprintf(payload, sizeof(payload), "{\"app_id\":\"%s\"}", app_id);
     ipc_server_broadcast_event("app_activated", payload);
@@ -113,7 +136,42 @@ static void daemon_dispatch_action(openlogi_daemon_ctx_t *ctx, const openlogi_ac
         return;
     }
 
-    inject_action(action);
+    if (action_queue_is_blocking(action)) {
+        if (g_verbose) {
+            printf("[openlogid] Offloading blocking action to async worker\n");
+        }
+        action_queue_enqueue(action);
+    } else {
+        inject_action(action);
+    }
+}
+
+static void on_button_runtime_event(const button_runtime_event_t *ev, void *user_data)
+{
+    openlogi_daemon_ctx_t *ctx = (openlogi_daemon_ctx_t *)user_data;
+    if (!ctx || !ev) return;
+
+    if (ev->type == BUTTON_EVT_TRIGGERED) {
+        config_button_id_t btn_id = (config_button_id_t)ev->press.button_id;
+        char front_app[256] = { 0 };
+        app_watch_get_frontmost(front_app, sizeof(front_app));
+
+        const config_button_binding_t *binding = config_resolve_binding(
+            &ctx->config, NULL, front_app, btn_id
+        );
+
+        if (!binding) return;
+
+        const openlogi_action_t *to_run = &binding->action;
+        if (to_run && to_run->type != ACTION_NONE) {
+            char desc[128];
+            snprintf(desc, sizeof(desc), "Button %s [%s] (app: %s)",
+                     button_id_to_string(btn_id),
+                     ev->action_type == TRIGGER_ACTION_LONG_PRESS ? "LongPress" : "Click",
+                     front_app);
+            daemon_dispatch_action(ctx, to_run, desc);
+        }
+    }
 }
 
 static void daemon_dispatch_gesture(openlogi_daemon_ctx_t *ctx, config_button_id_t btn_id, gesture_direction_t dir)
@@ -169,9 +227,22 @@ static hook_action_t on_hook_event(const hook_event_t *event, void *user_data)
     (void)user_data;
     if (!event) return HOOK_ACTION_PASS;
 
+    /* Handle scroll events with inversion */
+    if (event->type == HOOK_EVENT_SCROLL) {
+        bool invert = false;
+        if (g_daemon_ctx.config.device_count > 0) {
+            invert = g_daemon_ctx.config.devices[0].invert_scroll;
+        }
+        if (invert) {
+            inject_scroll(-event->scroll_dx, -event->scroll_dy);
+            return HOOK_ACTION_SUPPRESS;
+        }
+        return HOOK_ACTION_PASS;
+    }
+
     /* Map intercepted OS mouse event to button identifier */
     config_button_id_t btn_id = CONFIG_BUTTON_UNKNOWN;
-    if (event->type == HOOK_EVENT_BUTTON_DOWN) {
+    if (event->type == HOOK_EVENT_BUTTON_DOWN || event->type == HOOK_EVENT_BUTTON_UP) {
         if (event->button_number == 3) btn_id = CONFIG_BUTTON_MIDDLE;
         else if (event->button_number == 4) btn_id = CONFIG_BUTTON_BACK;
         else if (event->button_number == 5) btn_id = CONFIG_BUTTON_FORWARD;
@@ -190,10 +261,22 @@ static hook_action_t on_hook_event(const hook_event_t *event, void *user_data)
         );
 
         if (binding && binding->action.type != ACTION_NONE) {
-            char desc[128];
-            snprintf(desc, sizeof(desc), "OS Mouse Button %u (app: %s)", event->button_number, front_app);
-            daemon_dispatch_action(&g_daemon_ctx, &binding->action, desc);
-            return HOOK_ACTION_SUPPRESS;
+            uint64_t now_ms = daemon_get_time_ms();
+            if (event->type == HOOK_EVENT_BUTTON_DOWN) {
+                button_runtime_down(&g_button_rt, (uint32_t)btn_id, false, now_ms, NULL);
+                return HOOK_ACTION_SUPPRESS;
+            } else if (event->type == HOOK_EVENT_BUTTON_UP) {
+                if (button_runtime_is_pressed(&g_button_rt, (uint32_t)btn_id)) {
+                    button_runtime_up(&g_button_rt, (uint32_t)btn_id, now_ms);
+                    return HOOK_ACTION_SUPPRESS;
+                }
+            }
+        } else if (event->type == HOOK_EVENT_BUTTON_UP) {
+            if (button_runtime_is_pressed(&g_button_rt, (uint32_t)btn_id)) {
+                uint64_t now_ms = daemon_get_time_ms();
+                button_runtime_up(&g_button_rt, (uint32_t)btn_id, now_ms);
+                return HOOK_ACTION_SUPPRESS;
+            }
         }
     }
 
@@ -208,6 +291,7 @@ typedef struct {
     uint8_t feat_dpi;
     uint8_t feat_smartshift;
     uint8_t feat_reprog;
+    uint8_t feat_hires_wheel;
 } live_device_handle_t;
 
 static live_device_handle_t g_live_handles[OPENLOGI_MAX_DEVICES];
@@ -241,12 +325,18 @@ static void on_hid_report_event(hid_device_t *dev, const hidpp_raw_report_t *raw
 
         for (uint8_t c = 0; c < ev.u.buttons.count; c++) {
             uint16_t cid = ev.u.buttons.pressed_cids[c];
-            if (cid == HIDPP_CID_GESTURE_BUTTON) {
+            if (cid == HIDPP_CID_GESTURE_BUTTON || cid == CID_GESTURE_BUTTON) {
                 thumb_down = true;
             } else if (cid == HIDPP_CID_MODE_SHIFT_SMARTSHIFT ||
                        cid == HIDPP_CID_DPI_SWITCH_ED ||
                        cid == HIDPP_CID_DPI_SWITCH_FD) {
                 dpi_toggle_down = true;
+            } else if (cid == CID_BACK_BUTTON || cid == HIDPP_CID_BACK_CLASSIC || cid == HIDPP_CID_BACK_MULTIPLAT) {
+                button_runtime_down(&g_button_rt, (uint32_t)CONFIG_BUTTON_BACK, false, daemon_get_time_ms(), NULL);
+            } else if (cid == CID_FORWARD_BUTTON || cid == HIDPP_CID_FORWARD_CLASSIC || cid == HIDPP_CID_FORWARD_MULTIPLAT) {
+                button_runtime_down(&g_button_rt, (uint32_t)CONFIG_BUTTON_FORWARD, false, daemon_get_time_ms(), NULL);
+            } else if (cid == CID_MIDDLE_BUTTON) {
+                button_runtime_down(&g_button_rt, (uint32_t)CONFIG_BUTTON_MIDDLE, false, daemon_get_time_ms(), NULL);
             }
         }
 
@@ -279,6 +369,16 @@ static void on_hid_report_event(hid_device_t *dev, const hidpp_raw_report_t *raw
                     daemon_dispatch_gesture(ctx, btn, GESTURE_DIR_CLICK);
                 }
             }
+            uint64_t now_ms = daemon_get_time_ms();
+            if (button_runtime_is_pressed(&g_button_rt, (uint32_t)CONFIG_BUTTON_BACK)) {
+                button_runtime_up(&g_button_rt, (uint32_t)CONFIG_BUTTON_BACK, now_ms);
+            }
+            if (button_runtime_is_pressed(&g_button_rt, (uint32_t)CONFIG_BUTTON_FORWARD)) {
+                button_runtime_up(&g_button_rt, (uint32_t)CONFIG_BUTTON_FORWARD, now_ms);
+            }
+            if (button_runtime_is_pressed(&g_button_rt, (uint32_t)CONFIG_BUTTON_MIDDLE)) {
+                button_runtime_up(&g_button_rt, (uint32_t)CONFIG_BUTTON_MIDDLE, now_ms);
+            }
         }
     } else if (ev.type == REPROG_EVENT_RAW_XY) {
         if (swipe_accumulator_is_holding(&g_gesture_acc)) {
@@ -296,6 +396,8 @@ static void on_hid_report_event(hid_device_t *dev, const hidpp_raw_report_t *raw
         }
     }
 }
+
+static void on_hotplug_event(const hid_device_info_t *info, bool connected, void *user_data);
 
 static void daemon_probe_hardware(openlogi_daemon_ctx_t *ctx)
 {
@@ -318,6 +420,16 @@ static void daemon_probe_hardware(openlogi_daemon_ctx_t *ctx)
 
     if (g_verbose) {
         printf("[openlogid] Discovered %d Logitech HID collection(s). Probing...\n", count);
+    }
+
+    /* Snapshot for re-apply comparison */
+    reapply_device_t prev_devs[OPENLOGI_MAX_DEVICES];
+    size_t prev_count = ctx->device_count;
+    for (size_t d = 0; d < prev_count; d++) {
+        memset(&prev_devs[d], 0, sizeof(prev_devs[d]));
+        strncpy(prev_devs[d].device_key, ctx->devices[d].device_key, sizeof(prev_devs[d].device_key) - 1);
+        prev_devs[d].slot = (uint8_t)d;
+        prev_devs[d].online = ctx->devices[d].online;
     }
 
     ctx->device_count = 0;
@@ -397,32 +509,60 @@ static void daemon_probe_hardware(openlogi_daemon_ctx_t *ctx)
             g_live_handles[idx].feat_dpi = probed.feat_dpi;
             g_live_handles[idx].feat_smartshift = probed.feat_smartshift;
             g_live_handles[idx].feat_reprog = probed.feat_reprog_controls;
+            g_live_handles[idx].feat_hires_wheel = probed.feat_hires_wheel;
 
-            /* Divert gesture controls if feature 0x1B04 is supported */
+            const config_device_t *cdev = NULL;
+            for (size_t cd = 0; cd < ctx->config.device_count; cd++) {
+                if (strcmp(ctx->config.devices[cd].device_key, st->device_key) == 0 ||
+                    strcmp(ctx->config.devices[cd].device_key, "default") == 0) {
+                    cdev = &ctx->config.devices[cd];
+                    break;
+                }
+            }
+            if (!cdev && ctx->config.device_count > 0) {
+                cdev = &ctx->config.devices[0];
+            }
+
+            /* Resolve capture plan for this device */
             if (probed.feat_reprog_controls != 0) {
-                bool g_ok = hidpp_reprog_set_reporting(
-                    dev,
-                    HIDPP_DEVICE_RECEIVER,
-                    probed.feat_reprog_controls,
-                    HIDPP_DEFAULT_SW_ID,
-                    HIDPP_CID_GESTURE_BUTTON,
-                    true,  /* divert to software */
-                    true   /* raw_xy streaming */
-                );
-                bool m_ok = hidpp_reprog_set_reporting(
-                    dev,
-                    HIDPP_DEVICE_RECEIVER,
-                    probed.feat_reprog_controls,
-                    HIDPP_DEFAULT_SW_ID,
-                    HIDPP_CID_MODE_SHIFT_SMARTSHIFT,
-                    true,  /* divert to software */
-                    true   /* raw_xy streaming */
-                );
+                capture_spec_t plan;
+                capture_plan_resolve(cdev, &plan);
+
+                if (plan.divert_count == 0) {
+                    capture_spec_add_cid(&plan, HIDPP_CID_GESTURE_BUTTON);
+                    capture_spec_add_cid(&plan, HIDPP_CID_MODE_SHIFT_SMARTSHIFT);
+                    plan.wants_raw_xy = true;
+                }
+
+                for (size_t c = 0; c < plan.divert_count; c++) {
+                    uint16_t cid = plan.divert_cids[c];
+                    bool raw_xy = (cid == CID_GESTURE_BUTTON || cid == HIDPP_CID_GESTURE_BUTTON) ? plan.wants_raw_xy : false;
+                    hidpp_reprog_set_reporting(
+                        dev,
+                        HIDPP_DEVICE_RECEIVER,
+                        probed.feat_reprog_controls,
+                        HIDPP_DEFAULT_SW_ID,
+                        cid,
+                        true,
+                        raw_xy
+                    );
+                }
 
                 hid_register_report_callback(dev, on_hid_report_event, ctx);
+            }
 
-                printf("[openlogid] ReprogControls (0x1B04) diverted for %s: GestureButton=%s, ModeShift=%s\n",
-                       st->product_name, g_ok ? "diverted" : "err", m_ok ? "diverted" : "err");
+            /* Configure hardware hi-res wheel inversion if Feature 0x2121 is supported */
+            if (probed.feat_hires_wheel != 0) {
+                hidpp_v20_msg_t hw_req;
+                hires_wheel_build_mode_request(
+                    probed.feat_hires_wheel,
+                    HIDPP_DEFAULT_SW_ID,
+                    cdev ? cdev->invert_scroll : false,
+                    false,
+                    &hw_req
+                );
+                hidpp_msg_t hw_resp;
+                hid_transact(dev, &hw_req, &hw_resp, 1000);
             }
 
             ctx->device_count++;
@@ -433,6 +573,91 @@ static void daemon_probe_hardware(openlogi_daemon_ctx_t *ctx)
             hid_close(dev);
         }
     }
+
+    /* Compute re-apply plan for new arrivals / reconnected hardware */
+    reapply_device_t next_devs[OPENLOGI_MAX_DEVICES];
+    for (size_t d = 0; d < ctx->device_count; d++) {
+        memset(&next_devs[d], 0, sizeof(next_devs[d]));
+        strncpy(next_devs[d].device_key, ctx->devices[d].device_key, sizeof(next_devs[d].device_key) - 1);
+        next_devs[d].slot = (uint8_t)d;
+        next_devs[d].online = ctx->devices[d].online;
+    }
+
+    reapply_plan_t plan;
+    device_reapply_plan(prev_devs, prev_count, next_devs, ctx->device_count, false, &plan);
+
+    for (size_t p = 0; p < plan.target_count; p++) {
+        size_t idx = plan.target_indices[p];
+        if (idx < ctx->device_count && ctx->devices[idx].online) {
+            const config_device_t *cdev = NULL;
+            for (size_t cd = 0; cd < ctx->config.device_count; cd++) {
+                if (strcmp(ctx->config.devices[cd].device_key, ctx->devices[idx].device_key) == 0 ||
+                    strcmp(ctx->config.devices[cd].device_key, "default") == 0) {
+                    cdev = &ctx->config.devices[cd];
+                    break;
+                }
+            }
+            if (!cdev && ctx->config.device_count > 0) {
+                cdev = &ctx->config.devices[0];
+            }
+            if (cdev) {
+                if (cdev->dpi > 0 && ctx->devices[idx].dpi != cdev->dpi) {
+                    daemon_set_dpi(ctx, ctx->devices[idx].device_key, cdev->dpi);
+                }
+                if (cdev->smartshift_threshold > 0) {
+                    daemon_set_smartshift(ctx, ctx->devices[idx].device_key, cdev->smartshift_mode, cdev->smartshift_threshold);
+                }
+            }
+        }
+    }
+}
+
+static void on_hotplug_event(const hid_device_info_t *info, bool connected, void *user_data)
+{
+    openlogi_daemon_ctx_t *ctx = (openlogi_daemon_ctx_t *)user_data;
+    if (!ctx || !info) return;
+
+    if (!connected) {
+        if (g_verbose) {
+            printf("[openlogid] Hotplug: device disconnected: %s (%s)\n",
+                   info->product_name[0] ? info->product_name : "Logitech device",
+                   info->transport_path);
+        }
+        for (size_t i = 0; i < ctx->device_count; i++) {
+            bool match = false;
+            if (info->serial_number[0] != '\0' && ctx->devices[i].serial_number[0] != '\0') {
+                match = (strcmp(ctx->devices[i].serial_number, info->serial_number) == 0);
+            } else if (ctx->devices[i].vendor_id == info->vendor_id &&
+                       ctx->devices[i].product_id == info->product_id) {
+                match = true;
+            }
+
+            if (match) {
+                ctx->devices[i].online = false;
+                if (g_live_handles[i].dev_handle) {
+                    hidpp_diversion_untrack_device(g_live_handles[i].dev_handle);
+                    g_live_handles[i].dev_handle = NULL;
+                }
+                if (g_live_handles[i].secondary_handle) {
+                    hidpp_diversion_untrack_device(g_live_handles[i].secondary_handle);
+                    g_live_handles[i].secondary_handle = NULL;
+                }
+                char payload[128];
+                snprintf(payload, sizeof(payload), "{\"device_key\":\"%s\",\"online\":false}", ctx->devices[i].device_key);
+                ipc_server_broadcast_event("device_disconnected", payload);
+            }
+        }
+    } else {
+        if (g_verbose) {
+            printf("[openlogid] Hotplug: device connected: %s (%s)\n",
+                   info->product_name[0] ? info->product_name : "Logitech device",
+                   info->transport_path);
+        }
+        daemon_probe_hardware(ctx);
+        char payload[128];
+        snprintf(payload, sizeof(payload), "{\"product\":\"%s\",\"online\":true}", info->product_name);
+        ipc_server_broadcast_event("device_connected", payload);
+    }
 }
 
 static bool daemon_set_dpi(openlogi_daemon_ctx_t *ctx, const char *dev_key, uint16_t dpi)
@@ -441,20 +666,32 @@ static bool daemon_set_dpi(openlogi_daemon_ctx_t *ctx, const char *dev_key, uint
         printf("[openlogid] Setting DPI to %u for device %s\n", dpi, dev_key ? dev_key : "default");
     }
 
+    bool matched = false;
     for (size_t i = 0; i < ctx->device_count; i++) {
         if (!dev_key || strcmp(ctx->devices[i].device_key, dev_key) == 0) {
-            ctx->devices[i].dpi = dpi;
+            matched = true;
             if (g_live_handles[i].dev_handle && g_live_handles[i].feat_dpi != 0) {
-                hidpp_write_dpi(g_live_handles[i].dev_handle,
-                                g_live_handles[i].device_index,
-                                g_live_handles[i].feat_dpi,
-                                g_live_handles[i].sw_id,
-                                dpi);
+                bool ok = hidpp_write_dpi(g_live_handles[i].dev_handle,
+                                          g_live_handles[i].device_index,
+                                          g_live_handles[i].feat_dpi,
+                                          g_live_handles[i].sw_id,
+                                          dpi);
+                if (ok) {
+                    ctx->devices[i].dpi = dpi;
+                    return true;
+                } else {
+                    if (g_verbose) {
+                        fprintf(stderr, "[openlogid] Failed to write DPI to device %s\n", ctx->devices[i].device_key);
+                    }
+                    return false;
+                }
+            } else {
+                ctx->devices[i].dpi = dpi;
+                return true;
             }
-            return true;
         }
     }
-    return true;
+    return matched;
 }
 
 static bool daemon_set_smartshift(openlogi_daemon_ctx_t *ctx, const char *dev_key, uint8_t mode, uint8_t threshold)
@@ -464,28 +701,50 @@ static bool daemon_set_smartshift(openlogi_daemon_ctx_t *ctx, const char *dev_ke
                mode, threshold, dev_key ? dev_key : "default");
     }
 
+    bool matched = false;
     for (size_t i = 0; i < ctx->device_count; i++) {
         if (!dev_key || strcmp(ctx->devices[i].device_key, dev_key) == 0) {
-            ctx->devices[i].smartshift_mode = mode;
-            ctx->devices[i].smartshift_threshold = threshold;
+            matched = true;
             if (g_live_handles[i].dev_handle && g_live_handles[i].feat_smartshift != 0) {
-                hidpp_write_smartshift(g_live_handles[i].dev_handle,
-                                       g_live_handles[i].device_index,
-                                       g_live_handles[i].feat_smartshift,
-                                       g_live_handles[i].sw_id,
-                                       (smartshift_mode_t)mode,
-                                       threshold);
+                bool ok = hidpp_write_smartshift(g_live_handles[i].dev_handle,
+                                                 g_live_handles[i].device_index,
+                                                 g_live_handles[i].feat_smartshift,
+                                                 g_live_handles[i].sw_id,
+                                                 (smartshift_mode_t)mode,
+                                                 threshold);
+                if (ok) {
+                    ctx->devices[i].smartshift_mode = mode;
+                    ctx->devices[i].smartshift_threshold = threshold;
+                    return true;
+                } else {
+                    if (g_verbose) {
+                        fprintf(stderr, "[openlogid] Failed to write SmartShift to device %s\n", ctx->devices[i].device_key);
+                    }
+                    return false;
+                }
+            } else {
+                ctx->devices[i].smartshift_mode = mode;
+                ctx->devices[i].smartshift_threshold = threshold;
+                return true;
             }
-            return true;
         }
     }
-    return true;
+    return matched;
 }
 
 static bool daemon_reload_config(openlogi_daemon_ctx_t *ctx)
 {
     char err[256];
-    return config_load_file(g_config_file, &ctx->config, err, sizeof(err));
+    openlogi_config_t new_cfg;
+    memset(&new_cfg, 0, sizeof(new_cfg));
+    if (!config_load_file(g_config_file, &new_cfg, err, sizeof(err))) {
+        fprintf(stderr, "[openlogid] Failed to reload config: %s\n", err);
+        return false;
+    }
+    button_runtime_cancel_all(&g_button_rt, BUTTON_END_CANCELED_INVALIDATED);
+    config_free(&ctx->config);
+    ctx->config = new_cfg;
+    return true;
 }
 
 static void print_usage(const char *progname)
@@ -560,7 +819,9 @@ int daemon_main(int argc, char **argv)
     /* 1. Initialize Signal Handlers & Safety Registry */
     signals_init();
     inject_init();
+    action_queue_init();
     swipe_accumulator_init(&g_gesture_acc);
+    button_runtime_init(&g_button_rt, on_button_runtime_event, &g_daemon_ctx);
 
     /* 2. Determine Paths */
     if (g_socket_file[0] == '\0') {
@@ -569,6 +830,18 @@ int daemon_main(int argc, char **argv)
     if (g_config_file[0] == '\0') {
         config_get_default_path(g_config_file, sizeof(g_config_file));
     }
+
+    char state_dir[512];
+    strncpy(state_dir, g_socket_file, sizeof(state_dir) - 1);
+    char *last_sl = strrchr(state_dir, '/');
+    if (last_sl) *last_sl = '\0';
+    snprintf(g_session_file, sizeof(g_session_file), "%s/session.state", state_dir);
+
+    armed_session_t session;
+    memset(&session, 0, sizeof(session));
+    strncpy(session.boot_uuid, "openlogi-session", sizeof(session.boot_uuid) - 1);
+    session.audit_session_id = (uint32_t)getpid();
+    armed_session_write(g_session_file, &session);
 
     /* 3. Setup Daemon Context */
     memset(&g_daemon_ctx, 0, sizeof(g_daemon_ctx));
@@ -602,7 +875,8 @@ int daemon_main(int argc, char **argv)
         printf("[openlogid] Notice: Accessibility permission not yet granted; hook in passive mode.\n");
     }
 
-    /* 8. Probe Connected Logitech Hardware */
+    /* 8. Start Background Hotplug Monitor & Probe Connected Hardware */
+    hid_start_hotplug_monitor(on_hotplug_event, &g_daemon_ctx);
     daemon_probe_hardware(&g_daemon_ctx);
 
     /* 9. Start IPC Server */
@@ -617,13 +891,16 @@ int daemon_main(int argc, char **argv)
     int loop_tick = 0;
     while (!signals_should_exit()) {
 #ifdef __APPLE__
-        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.2, false);
+        CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, false);
 #else
-        usleep(200000); /* 200ms tick */
+        usleep(50000); /* 50ms tick */
 #endif
+        uint64_t now_ms = daemon_get_time_ms();
+        button_runtime_tick(&g_button_rt, now_ms);
+
         loop_tick++;
-        /* Periodically re-scan hardware if no devices were online at launch (every ~2 seconds) */
-        if (g_daemon_ctx.device_count == 0 && (loop_tick % 10 == 0)) {
+        /* Periodically re-scan hardware if no devices were online at launch (every ~2 seconds = 40 ticks @ 50ms) */
+        if (g_daemon_ctx.device_count == 0 && (loop_tick % 40 == 0)) {
             daemon_probe_hardware(&g_daemon_ctx);
         }
     }
@@ -635,7 +912,9 @@ int daemon_main(int argc, char **argv)
     hook_stop();
     app_watch_stop();
     config_watch_stop();
+    action_queue_shutdown();
     hidpp_diversion_teardown_all();
+    hid_stop_hotplug_monitor();
 
     for (size_t i = 0; i < g_daemon_ctx.device_count; i++) {
         if (g_live_handles[i].dev_handle) {
@@ -648,6 +927,8 @@ int daemon_main(int argc, char **argv)
         }
     }
     hid_transport_shutdown();
+    config_free(&g_daemon_ctx.config);
+    armed_session_clear(g_session_file);
 
     single_instance_release(lock_fd, lpath);
 

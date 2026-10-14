@@ -125,6 +125,7 @@ static void test_input_injection_execution(void)
 {
     bool ok = inject_init();
     assert(ok == true);
+    inject_set_dry_run(true);
 
     /* Test action dispatch structures safely */
     openlogi_action_t act;

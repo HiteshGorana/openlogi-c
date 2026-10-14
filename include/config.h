@@ -66,6 +66,7 @@ typedef struct {
 
     uint8_t smartshift_mode;      /* 0=disabled, 1=ratchet, 2=freespin, 3=auto */
     uint8_t smartshift_threshold; /* 1..255 */
+    bool invert_scroll;           /* Invert mouse wheel scroll direction */
 
     config_app_profile_t default_profile;
     config_app_profile_t app_profiles[OPENLOGI_MAX_APP_PROFILES];
@@ -97,6 +98,11 @@ bool config_parse_string(const char *toml_str, openlogi_config_t *out_config, ch
 bool config_load_file(const char *filepath, openlogi_config_t *out_config, char *errbuf, size_t errbufsz);
 
 /**
+ * @brief Free all heap-allocated resources in a configuration (e.g. workflows).
+ */
+void config_free(openlogi_config_t *cfg);
+
+/**
  * @brief Helper to resolve button action for a given device, foreground application, and button ID.
  */
 const config_button_binding_t *config_resolve_binding(
@@ -115,6 +121,11 @@ bool action_from_string(const char *str, openlogi_action_t *out_action);
  * @brief Convert button string to button ID.
  */
 config_button_id_t button_id_from_string(const char *str);
+
+/**
+ * @brief Convert button ID to canonical button name string.
+ */
+const char *button_id_to_string(config_button_id_t btn);
 
 #ifdef __cplusplus
 }

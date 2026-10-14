@@ -64,6 +64,26 @@ config_button_id_t button_id_from_string(const char *str)
     return CONFIG_BUTTON_UNKNOWN;
 }
 
+const char *button_id_to_string(config_button_id_t btn)
+{
+    switch (btn) {
+        case CONFIG_BUTTON_LEFT: return "LeftClick";
+        case CONFIG_BUTTON_RIGHT: return "RightClick";
+        case CONFIG_BUTTON_MIDDLE: return "MiddleClick";
+        case CONFIG_BUTTON_BACK: return "Back";
+        case CONFIG_BUTTON_FORWARD: return "Forward";
+        case CONFIG_BUTTON_DPI_TOGGLE: return "DpiToggle";
+        case CONFIG_BUTTON_GESTURE: return "GestureButton";
+        case CONFIG_BUTTON_THUMBWHEEL: return "ThumbWheel";
+        case CONFIG_BUTTON_WHEEL_TILT_LEFT: return "WheelTiltLeft";
+        case CONFIG_BUTTON_WHEEL_TILT_RIGHT: return "WheelTiltRight";
+        case CONFIG_BUTTON_THUMBWHEEL_UP: return "ThumbWheelScrollUp";
+        case CONFIG_BUTTON_THUMBWHEEL_DOWN: return "ThumbWheelScrollDown";
+        case CONFIG_BUTTON_HAPTIC_PANEL: return "HapticPanel";
+        default: return "Unknown";
+    }
+}
+
 static uint16_t macos_char_to_keycode(char c)
 {
     c = (char)tolower((unsigned char)c);
@@ -696,6 +716,53 @@ static void parse_button_bindings_table(
     }
 }
 
+static void free_action(openlogi_action_t *action)
+{
+    if (!action) return;
+    if (action->type == ACTION_WORKFLOW && action->u.workflow) {
+        free(action->u.workflow);
+        action->u.workflow = NULL;
+    }
+}
+
+static void free_button_binding(config_button_binding_t *b)
+{
+    if (!b) return;
+    free_action(&b->action);
+    free_action(&b->gesture_up);
+    free_action(&b->gesture_down);
+    free_action(&b->gesture_left);
+    free_action(&b->gesture_right);
+}
+
+static void free_app_profile(config_app_profile_t *prof)
+{
+    if (!prof) return;
+    for (size_t i = 0; i < prof->binding_count; i++) {
+        free_button_binding(&prof->bindings[i]);
+    }
+    prof->binding_count = 0;
+}
+
+static void free_device(config_device_t *dev)
+{
+    if (!dev) return;
+    free_app_profile(&dev->default_profile);
+    for (size_t i = 0; i < dev->app_profile_count; i++) {
+        free_app_profile(&dev->app_profiles[i]);
+    }
+    dev->app_profile_count = 0;
+}
+
+void config_free(openlogi_config_t *cfg)
+{
+    if (!cfg) return;
+    for (size_t i = 0; i < cfg->device_count; i++) {
+        free_device(&cfg->devices[i]);
+    }
+    cfg->device_count = 0;
+}
+
 bool config_parse_string(
     const char *toml_str,
     openlogi_config_t *out_config,
@@ -707,8 +774,12 @@ bool config_parse_string(
         return false;
     }
 
-    memset(out_config, 0, sizeof(*out_config));
-    out_config->schema_version = OPENLOGI_SCHEMA_VERSION;
+    openlogi_config_t *tmp = calloc(1, sizeof(openlogi_config_t));
+    if (!tmp) {
+        if (errbuf && errbufsz > 0) snprintf(errbuf, errbufsz, "Memory allocation error");
+        return false;
+    }
+    tmp->schema_version = OPENLOGI_SCHEMA_VERSION;
 
     char parse_err[256];
     toml_table_t *root = toml_parse((char *)toml_str, parse_err, sizeof(parse_err));
@@ -716,33 +787,35 @@ bool config_parse_string(
         if (errbuf && errbufsz > 0) {
             snprintf(errbuf, errbufsz, "TOML parse error: %s", parse_err);
         }
+        config_free(tmp);
+        free(tmp);
         return false;
     }
 
     /* Read schema version */
     toml_datum_t ver = toml_int_in(root, "schema_version");
     if (ver.ok) {
-        out_config->schema_version = (uint32_t)ver.u.i;
+        tmp->schema_version = (uint32_t)ver.u.i;
     }
 
     /* Read selected device */
     toml_datum_t sel_dev = toml_string_in(root, "selected_device");
     if (sel_dev.ok) {
-        strncpy(out_config->selected_device, sel_dev.u.s, sizeof(out_config->selected_device) - 1);
+        strncpy(tmp->selected_device, sel_dev.u.s, sizeof(tmp->selected_device) - 1);
         free(sel_dev.u.s);
     }
 
     /* Read devices table */
     const toml_table_t *devices_tab = toml_table_in(root, "devices");
     if (devices_tab) {
-        for (int i = 0; out_config->device_count < OPENLOGI_MAX_DEVICES; i++) {
+        for (int i = 0; tmp->device_count < OPENLOGI_MAX_DEVICES; i++) {
             const char *dev_key = toml_key_in(devices_tab, i);
             if (!dev_key) break;
 
             const toml_table_t *dev_tab = toml_table_in(devices_tab, dev_key);
             if (!dev_tab) continue;
 
-            config_device_t *dev = &out_config->devices[out_config->device_count++];
+            config_device_t *dev = &tmp->devices[tmp->device_count++];
             memset(dev, 0, sizeof(*dev));
             strncpy(dev->device_key, dev_key, sizeof(dev->device_key) - 1);
             dev->enabled = true;
@@ -788,6 +861,12 @@ bool config_parse_string(
                 }
             }
 
+            /* Invert scroll */
+            toml_datum_t inv = toml_bool_in(dev_tab, "invert_scroll");
+            if (inv.ok) {
+                dev->invert_scroll = (bool)inv.u.b;
+            }
+
             /* Default bindings */
             const toml_table_t *bindings_tab = toml_table_in(dev_tab, "bindings");
             if (bindings_tab) {
@@ -825,6 +904,8 @@ bool config_parse_string(
     }
 
     toml_free(root);
+    *out_config = *tmp;
+    free(tmp);
     return true;
 }
 

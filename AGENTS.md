@@ -253,12 +253,12 @@ Hot-reloads `~/.config/openlogi/config.toml` on demand.
 
 ---
 
-## 7. Automated Test Suite (19 Suites / 99 Tests)
+## 7. Automated Test Suite (20 Suites / 103 Tests)
 
 The test harness provides comprehensive coverage with 0 external dependencies:
 
 ```bash
-# Run all 19 suites via the visual runner
+# Run all 20 suites via the visual runner
 make test
 
 # Verbose microsecond execution timing
@@ -291,6 +291,7 @@ make asan
 | **17** | `test_spaces_shortcuts.c` | 5 | Mission Control dispatch, modifier mask parsing, virtual key codes |
 | **18** | `test_hires_wheel_curve.c` | 4 | Feature 0x2121 hi-res wheel payload decoding, acceleration curves |
 | **19** | `test_actions.c` | 6 | All 45 catalog actions, aliases, 8 parameterized actions, workflows |
+| **20** | `test_action_queue.c` | 4 | Non-blocking asynchronous action queue, worker thread, workflow clone |
 
 ---
 

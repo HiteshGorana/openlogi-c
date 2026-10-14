@@ -13,6 +13,8 @@
 extern "C" {
 #endif
 
+#define OPENLOGI_EVENT_MARKER 0x4F4C4F4749ULL /* "OLOGI" loop-prevention marker */
+
 typedef enum {
     HOOK_EVENT_BUTTON_DOWN,
     HOOK_EVENT_BUTTON_UP,

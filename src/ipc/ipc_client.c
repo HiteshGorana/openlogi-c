@@ -108,13 +108,26 @@ char *ipc_client_call_raw(ipc_client_t *client, const char *method, const char *
     uint64_t id = client->next_id++;
 
     char req_hdr[256];
+    char *buf = req_hdr;
+    char *heap_buf = NULL;
+
     int req_len = snprintf(req_hdr, sizeof(req_hdr),
         "{\"jsonrpc\":\"2.0\",\"id\":%llu,\"method\":\"%s\",\"params\":%s}\n",
         (unsigned long long)id, method, params);
 
     if (req_len < 0) return NULL;
 
-    ssize_t written = write(client->fd, req_hdr, (size_t)req_len);
+    if ((size_t)req_len >= sizeof(req_hdr)) {
+        heap_buf = malloc((size_t)req_len + 1);
+        if (!heap_buf) return NULL;
+        snprintf(heap_buf, (size_t)req_len + 1,
+            "{\"jsonrpc\":\"2.0\",\"id\":%llu,\"method\":\"%s\",\"params\":%s}\n",
+            (unsigned long long)id, method, params);
+        buf = heap_buf;
+    }
+
+    ssize_t written = write(client->fd, buf, (size_t)req_len);
+    if (heap_buf) free(heap_buf);
     if (written != req_len) return NULL;
 
     /* Await response (up to 3 seconds) */

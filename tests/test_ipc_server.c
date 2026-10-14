@@ -4,6 +4,7 @@
  */
 
 #include "ipc_server.h"
+#include "ipc_client.h"
 #include "yyjson.h"
 #include "test_framework.h"
 
@@ -330,6 +331,47 @@ static void test_socket_server_end_to_end(void)
     TEST_PASS("test_socket_server_end_to_end");
 }
 
+static void test_ipc_client_large_payload(void)
+{
+    openlogi_daemon_ctx_t ctx;
+    setup_mock_ctx(&ctx);
+
+    const char *test_sock = "/tmp/test_openlogi_ipc_client.sock";
+    unlink(test_sock);
+
+    bool started = ipc_server_start(test_sock, &ctx);
+    assert(started);
+    usleep(20000);
+
+    ipc_client_t client;
+    bool connected = ipc_client_connect(test_sock, &client);
+    assert(connected);
+
+    /* Construct a large parameters payload > 256 bytes (e.g. 512 bytes padding) */
+    char large_params[1024];
+    char padding[512];
+    memset(padding, 'a', sizeof(padding) - 1);
+    padding[sizeof(padding) - 1] = '\0';
+    snprintf(large_params, sizeof(large_params), "{\"padding\":\"%s\"}", padding);
+    assert(strlen(large_params) > 500);
+
+    /* Call openlogi.get_status with large payload */
+    yyjson_doc *doc = ipc_client_call(&client, "openlogi.get_status", large_params);
+    assert(doc != NULL && "Large payload RPC call should succeed without crash or truncation");
+
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    yyjson_val *res = yyjson_obj_get(root, "result");
+    assert(res != NULL);
+    assert(strcmp(yyjson_get_str(yyjson_obj_get(res, "version")), OPENLOGI_AGENT_VERSION) == 0);
+    yyjson_doc_free(doc);
+
+    ipc_client_close(&client);
+    ipc_server_stop();
+    unlink(test_sock);
+
+    TEST_PASS("test_ipc_client_large_payload");
+}
+
 int main(void)
 {
     test_suite_begin(&g_suite, "test_ipc_server", "JSON-RPC 2.0 UNIX Domain Socket Server");
@@ -339,6 +381,7 @@ int main(void)
     TEST_CASE_RUN(g_suite, test_jsonrpc_dispatch_set_dpi_and_smartshift);
     TEST_CASE_RUN(g_suite, test_jsonrpc_dispatch_errors);
     TEST_CASE_RUN(g_suite, test_socket_server_end_to_end);
+    TEST_CASE_RUN(g_suite, test_ipc_client_large_payload);
 
     test_suite_end(&g_suite);
     return (g_suite.failed == 0) ? 0 : 1;

@@ -52,7 +52,7 @@ SRC_CORE = src/core/signals.c src/core/gesture.c src/core/config.c src/core/conf
            src/core/single_instance.c src/core/button_runtime.c src/core/scroll_math.c \
            src/core/device_reapply.c src/core/dpi_cycle.c src/core/armed_session.c \
            src/core/scroll_pipeline.c src/core/capture_plan.c src/core/spaces_shortcuts.c \
-           src/core/hires_wheel.c src/core/tool_path.c
+           src/core/hires_wheel.c src/core/tool_path.c src/core/action_queue.c
 SRC_IPC = src/ipc/ipc_server.c src/ipc/ipc_client.c
 SRC_PLATFORM =
 SRC_HOOK =
@@ -99,7 +99,8 @@ TEST_BINS = $(BIN_DIR)/test_hidpp_packet \
             $(BIN_DIR)/test_capture_plan \
             $(BIN_DIR)/test_spaces_shortcuts \
             $(BIN_DIR)/test_hires_wheel_curve \
-            $(BIN_DIR)/test_actions
+            $(BIN_DIR)/test_actions \
+            $(BIN_DIR)/test_action_queue
 
 TOOLS = $(BIN_DIR)/openlogi $(BIN_DIR)/openlogid $(BIN_DIR)/openlogictl $(BIN_DIR)/openlogi_discover
 
@@ -126,8 +127,8 @@ $(BUILD_DIR)/src/%.o: src/%.c
 
 $(BUILD_DIR)/vendor/%.o: vendor/%.c
 	@mkdir -p $(dir $@)
-	# Compile vendor sources with relaxed warnings
-	$(CC) $(CPPFLAGS) -std=c99 -O2 -Ivendor/yyjson -Ivendor/tomlc99 -c $< -o $@
+	# Compile vendor sources with relaxed warnings and optional sanitizer instrumentation
+	$(CC) $(CPPFLAGS) -std=c99 -O2 -w $(EXTRA_VENDOR_CFLAGS) -Ivendor/yyjson -Ivendor/tomlc99 -c $< -o $@
 
 $(BIN_DIR)/test_hidpp_packet: tests/test_hidpp_packet.c $(BUILD_DIR)/src/hid/hidpp_packet.o
 	@mkdir -p $(BIN_DIR)
@@ -205,6 +206,10 @@ $(BIN_DIR)/test_actions: tests/test_actions.c $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
+$(BIN_DIR)/test_action_queue: tests/test_action_queue.c $(CORE_OBJS)
+	@mkdir -p $(BIN_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+
 $(BIN_DIR)/openlogi: $(BUILD_DIR)/src/cli/openlogi.o $(BUILD_DIR)/src/daemon/main.o $(BUILD_DIR)/src/cli/openlogictl.o $(BUILD_DIR)/src/cli/openlogi_discover.o $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
@@ -253,7 +258,7 @@ uninstall:
 	@echo "[+] Successfully uninstalled OpenLogi C tools from $(DESTDIR)$(BINDIR) and stopped daemon."
 
 asan: clean
-	$(MAKE) test CFLAGS="$(CFLAGS) -fsanitize=address,undefined -fno-omit-frame-pointer" LDFLAGS="$(LDFLAGS) -fsanitize=address,undefined"
+	$(MAKE) test CFLAGS="$(CFLAGS) -fsanitize=address,undefined -fno-omit-frame-pointer" EXTRA_VENDOR_CFLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" LDFLAGS="$(LDFLAGS) -fsanitize=address,undefined"
 
 help info:
 	@echo "================================================================================"

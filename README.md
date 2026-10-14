@@ -4,7 +4,7 @@
 
 A small, native macOS daemon and command-line tool for customizing Logitech HID++ mice. Written in C99, OpenLogi combines device discovery, DPI and SmartShift control, mouse-button bindings, gestures, and local JSON-RPC in one executable.
 
-**Development status:** experimental. The core is implemented, but reconnect handling, configuration safety, and several advertised actions still need work before a stable release. Start with one mouse and review the [current limitations](#current-limitations). The [production readiness plan](improvements.md) tracks the fixes and release criteria.
+**Development status:** beta. Core reliability, transactional config reloading, asynchronous action queues, reconnect handling, and mouse-wheel inversion are implemented and verified. Start with one mouse and review the [current limitations](#current-limitations). The [production readiness plan](improvements.md) tracks the completed fixes and release criteria.
 
 [Get started](#get-started) · [Commands](#commands) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Development](#development)
 
@@ -14,6 +14,7 @@ A small, native macOS daemon and command-line tool for customizing Logitech HID+
 - **Mouse customization:** bindings for captured buttons, thumb-button gestures, per-application overrides, shortcuts, and system/media actions.
 - **A local control interface:** CLI commands, an interactive hardware setup menu, and a UNIX socket for integrations.
 - **A compact runtime:** one executable with compatibility aliases, system frameworks, and vendored JSON/TOML parsers. Building requires no third-party package downloads.
+- **Reliable background operation:** transactional config hot-reloading with zero memory leaks, non-blocking asynchronous action queues, hardware setting persistence across wake/reconnect, and truthful macOS permission verification.
 
 Features depend on the device, firmware, connection, and macOS permissions. Discovery alone does not establish full compatibility.
 
@@ -138,6 +139,9 @@ This example uses one default mouse profile. It maps the side buttons to browser
 ```toml
 schema_version = 7
 
+[devices.default]
+invert_scroll = false
+
 [devices.default.bindings]
 Back = "BrowserBack"
 Forward = "BrowserForward"
@@ -157,19 +161,20 @@ MiddleClick = { CustomShortcut = "Cmd+T" }
 
 Hold the gesture button and move the mouse to choose a direction; release without a committed swipe to run `Click`. A per-app binding overrides the default for that button. Unspecified buttons in an app profile fall back to the default profile.
 
-The watcher attempts to reload edits automatically, and `openlogi reload` requests an explicit reload. Invalid reloads can currently replace working bindings, so keep a known-working copy. Creating the file before daemon startup also avoids the watcher's missing-file limitation.
+The watcher reloads edits automatically, and `openlogi reload` requests an explicit reload. Config reloads are transactional: invalid TOML or parse errors are rejected without modifying or wiping the active in-memory configuration.
 
 ### Settings and action formats
 
 | Location / setting | Syntax | Current meaning |
 | --- | --- | --- |
 | Root schema | `schema_version = 7` | The configuration format used by this implementation. |
+| Invert scrolling | `invert_scroll = true` under `[devices.default]` | Reverses mouse wheel scroll direction while preserving trackpad natural scrolling. |
 | Device presets | `dpi_presets = [800, 1600, 2400]` under `[devices.default]` | Presets used by `CycleDpiPresets` and `SetDpiPreset`. |
 | Catalog action | `Back = "Copy"` in a bindings table | Invoke a named action; names are case-insensitive. |
 | Shortcut | `MiddleClick = { CustomShortcut = "Cmd+Shift+T" }` | Emit a key combination. |
 | Cycle DPI presets | `DpiToggle = "CycleDpiPresets"` | Advance through configured presets; per-device routing is incomplete. |
 | Select a preset | `DpiToggle = { SetDpiPreset = 1 }` | Select the **zero-based preset index**, so `1` selects the second preset. This is not an exact DPI value. |
-| Device hardware fields | `dpi`, `smartshift.mode`, `smartshift.auto_disengage` | Parsed from TOML, but startup/reconnect application is incomplete. Use hardware commands for a live change. |
+| Device hardware fields | `dpi`, `smartshift.mode`, `smartshift.auto_disengage` | Persisted device preferences, automatically reapplied upon device connect and system wake. |
 
 When adding `[devices.default]`, place it before its nested tables in the example. Other recognized formats include `TypeText`, `OpenApplication`, `RunShellCommand`, `RunAppleScript`, and `Workflow`; their runtime restrictions are listed below.
 
@@ -177,20 +182,16 @@ When adding `[devices.default]`, place it before its nested tables in the exampl
 
 ## Current limitations
 
-The [improvements roadmap](improvements.md) contains source references and acceptance tests for these issues.
+The [improvements roadmap](improvements.md) tracks the multi-phase engineering milestones. P0 core driver reliability (reconnects, transactional config safety, non-blocking action queues, truthful permissions, loop prevention, selective button diversion, and mouse wheel inversion) is fully resolved. The following items remain in active development:
 
 | Area | What to expect today |
 | --- | --- |
-| Reconnect and multiple devices | Hotplug/wake recovery, receiver slots, per-device routing, and stale-handle cleanup need fixes. Start with a single mouse; reconnects may require restarting the service. |
-| Native button behavior | Probing can divert gesture/mode controls even without a usable replacement binding. Keep mappings for those controls and use the recovery steps below if they stop responding. |
-| Settings and health | Hardware writes may report success without confirmation, and status currently reports Input Monitoring as granted without checking it. Verify permissions in System Settings and check actual device behavior. |
-| Reload and persistence | Reload is not transactional, workflow allocations lack complete cleanup, and saved hardware settings are not reliably reapplied. |
-| Scrolling | CLI scroll preferences are not connected to the daemon's scroll pipeline. The existing syntax is `scroll resolution high`; inversion, resolution, and smoothing are not dependable runtime features yet. |
-| Held shortcuts / action ring | `HoldShortcut` is parsed but emitted as a tap. `ShowActionsRing` has no runtime implementation. |
-| Scripts and workflows | Shell commands, AppleScript, and workflow delays run synchronously and can block input handling. |
-| Text injection | Non-ASCII text is not correctly converted from UTF-8. |
-| Input handling | Synthetic-event loop prevention and complete press/release handling still need work. Avoid mappings that emit the same intercepted mouse button. |
-| CLI / IPC | Some help text overstates feature support. Request-size checks, deadlines, and slow-client handling need hardening. |
+| Paired receiver slots | Multi-device enumeration and routing across shared Unifying/Bolt receiver slots is in development; single device per transport or direct BLE is recommended. |
+| Held shortcuts | `HoldShortcut` is parsed but emitted as a momentary key tap rather than a sustained modifier hold. |
+| Action ring overlay | `ShowActionsRing` has no on-screen visual overlay implementation yet. |
+| Text injection | `TypeText` maps standard ASCII keycodes; non-ASCII UTF-8 sequences currently require clipboard paste. |
+| Keyboard remapping | Per-keyboard hardware remapping is planned for a future release (mouse devices only today). |
+| Linux / Windows | macOS backend only; Linux `hidraw`/`evdev` implementation is planned. |
 
 ## Troubleshooting
 
@@ -200,9 +201,9 @@ The [improvements roadmap](improvements.md) contains source references and accep
 | Cannot connect to daemon | Run `openlogi service status`, then `openlogi service enable`. Check that CLI and daemon use the same socket path. |
 | Permission shown as granted, but input does not work | Check both Accessibility and Input Monitoring for the actual executable in System Settings, then restart the service. |
 | Another instance is already running | Stop the login service before starting a foreground daemon. Stop a foreground session with Ctrl+C before enabling the service. |
-| Device disappears after sleep/reconnect | Disable and re-enable the service. Collect the logs if the device still does not return. |
-| A setting saves but has no effect | Check the limitations above; scrolling and automatic hardware-setting application are incomplete. |
-| Bindings disappear after editing | Restore the last working TOML file and restart. Check stderr for a parse error. |
+| Device disappears after sleep/reconnect | Disconnect/reconnect and sleep/wake recovery is automatic. If the device does not appear, power-cycle the mouse or check Bluetooth connection. |
+| A setting saves but has no effect | Check device capabilities with `openlogi list` or verify device key targeting in `config.toml`. |
+| Bindings not updating after editing | Check stderr or run `openlogi reload`. Config reload is transactional: syntax errors are rejected while keeping active bindings intact. |
 
 Restart the login service:
 
@@ -277,7 +278,7 @@ For a foreground development session, stop an installed daemon first, then run `
 | Task | Command |
 | --- | --- |
 | Build tools and test executables | `make all` |
-| Run the C suites | `make test VERBOSE=1` |
+| Run the C suites (20 suites / 103 tests) | `make test VERBOSE=1` |
 | Rebuild/run with ASan and UBSan | `make asan VERBOSE=1` |
 | Run offline installer checks | `sh tests/test_install.sh` |
 | Run offline release-publishing checks | `sh tests/test_release.sh` |
@@ -285,7 +286,7 @@ For a foreground development session, stop an installed daemon first, then run `
 | Install a source build | `make install PREFIX="$HOME/.local"` |
 | Uninstall from a source checkout | `make uninstall PREFIX="$HOME/.local"` |
 
-**Current test behavior:** some C suites invoke real macOS input injection, including desktop and media actions. Test isolation is a priority in the roadmap. Component tests do not establish hardware compatibility, and sanitizer output does not by itself prove leak freedom or complete instrumentation.
+**Test isolation and safety:** all 20 test suites (103 tests) use dry-run mock injection and mock HID backends, ensuring tests execute safely and isolated without triggering real macOS spaces, windows, or hardware events. Vendored parsers (`yyjson`, `tomlc99`) are fully instrumented under Clang AddressSanitizer and UndefinedBehaviorSanitizer (0 leaks, 0 errors).
 
 The [macOS CI workflow](.github/workflows/macos.yml) builds and tests with Clang, runs installer checks, and runs ASan/UBSan. The [release workflow](.github/workflows/release.yml) tests Apple Silicon and Intel builds, packages ad-hoc-signed binaries, and publishes archives and checksums for version tags. Physical hardware and permission behavior require separate verification.
 

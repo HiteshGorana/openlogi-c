@@ -6,6 +6,7 @@
 #ifdef __APPLE__
 
 #include "inject.h"
+#include "hook.h"
 
 #include <ApplicationServices/ApplicationServices.h>
 #include <CoreFoundation/CoreFoundation.h>
@@ -31,6 +32,24 @@
 typedef int (*CoreDockSendNotificationFn)(CFStringRef, int);
 static CoreDockSendNotificationFn g_core_dock_send = NULL;
 static void *g_app_services_lib = NULL;
+static bool g_dry_run = false;
+
+void inject_set_dry_run(bool enable)
+{
+    g_dry_run = enable;
+}
+
+bool inject_get_dry_run(void)
+{
+    return g_dry_run;
+}
+
+static inline void post_event_marked(CGEventTapLocation location, CGEventRef event)
+{
+    if (!event) return;
+    CGEventSetIntegerValueField(event, kCGEventSourceUserData, (int64_t)OPENLOGI_EVENT_MARKER);
+    CGEventPost(location, event);
+}
 
 static CoreDockSendNotificationFn resolve_core_dock_send(void)
 {
@@ -50,12 +69,16 @@ static CoreDockSendNotificationFn resolve_core_dock_send(void)
 
 bool inject_init(void)
 {
+    if (getenv("OPENLOGI_INJECT_DRY_RUN")) {
+        g_dry_run = true;
+    }
     resolve_core_dock_send();
     return true;
 }
 
 static void send_dock_notification(const char *name)
 {
+    if (g_dry_run) return;
     CoreDockSendNotificationFn fn = resolve_core_dock_send();
     if (fn) {
         CFStringRef str = CFStringCreateWithCString(kCFAllocatorDefault, name, kCFStringEncodingUTF8);
@@ -98,42 +121,48 @@ void inject_launchpad(void)
 
 void inject_next_space(void)
 {
+    if (g_dry_run) return;
+
     /* Synthesize Control + Right Arrow (kVK_RightArrow = 0x7C) */
     CGEventRef down = CGEventCreateKeyboardEvent(NULL, 0x7C, true);
     if (down) {
         CGEventSetFlags(down, kCGEventFlagMaskControl);
-        CGEventPost(kCGHIDEventTap, down);
+        post_event_marked(kCGHIDEventTap, down);
         CFRelease(down);
     }
 
     CGEventRef up = CGEventCreateKeyboardEvent(NULL, 0x7C, false);
     if (up) {
         CGEventSetFlags(up, kCGEventFlagMaskControl);
-        CGEventPost(kCGHIDEventTap, up);
+        post_event_marked(kCGHIDEventTap, up);
         CFRelease(up);
     }
 }
 
 void inject_prev_space(void)
 {
+    if (g_dry_run) return;
+
     /* Synthesize Control + Left Arrow (kVK_LeftArrow = 0x7B) */
     CGEventRef down = CGEventCreateKeyboardEvent(NULL, 0x7B, true);
     if (down) {
         CGEventSetFlags(down, kCGEventFlagMaskControl);
-        CGEventPost(kCGHIDEventTap, down);
+        post_event_marked(kCGHIDEventTap, down);
         CFRelease(down);
     }
 
     CGEventRef up = CGEventCreateKeyboardEvent(NULL, 0x7B, false);
     if (up) {
         CGEventSetFlags(up, kCGEventFlagMaskControl);
-        CGEventPost(kCGHIDEventTap, up);
+        post_event_marked(kCGHIDEventTap, up);
         CFRelease(up);
     }
 }
 
 void inject_media_key(media_key_t key)
 {
+    if (g_dry_run) return;
+
     int nx_key = NX_KEYTYPE_PLAY;
     switch (key) {
         case MEDIA_KEY_PLAY_PAUSE:  nx_key = NX_KEYTYPE_PLAY; break;
@@ -178,7 +207,7 @@ void inject_media_key(media_key_t key)
         if (nsEvent) {
             CGEventRef cgEvent = getCgEvent(nsEvent, cgEventSel);
             if (cgEvent) {
-                CGEventPost(kCGHIDEventTap, cgEvent);
+                post_event_marked(kCGHIDEventTap, cgEvent);
             }
         }
     }
@@ -186,6 +215,8 @@ void inject_media_key(media_key_t key)
 
 void inject_key_combo(uint16_t keycode, uint32_t modifiers)
 {
+    if (g_dry_run) return;
+
     CGEventFlags flags = 0;
     if (modifiers & MOD_CMD)   flags |= kCGEventFlagMaskCommand;
     if (modifiers & MOD_CTRL)  flags |= kCGEventFlagMaskControl;
@@ -195,20 +226,22 @@ void inject_key_combo(uint16_t keycode, uint32_t modifiers)
     CGEventRef down = CGEventCreateKeyboardEvent(NULL, keycode, true);
     if (down) {
         CGEventSetFlags(down, flags);
-        CGEventPost(kCGHIDEventTap, down);
+        post_event_marked(kCGHIDEventTap, down);
         CFRelease(down);
     }
 
     CGEventRef up = CGEventCreateKeyboardEvent(NULL, keycode, false);
     if (up) {
         CGEventSetFlags(up, flags);
-        CGEventPost(kCGHIDEventTap, up);
+        post_event_marked(kCGHIDEventTap, up);
         CFRelease(up);
     }
 }
 
 void inject_mouse_click(uint32_t button)
 {
+    if (g_dry_run) return;
+
     CGEventRef dummy = CGEventCreate(NULL);
     if (!dummy) return;
     CGPoint loc = CGEventGetLocation(dummy);
@@ -235,7 +268,7 @@ void inject_mouse_click(uint32_t button)
         if (button > 2) {
             CGEventSetIntegerValueField(down, kCGMouseEventButtonNumber, button - 1);
         }
-        CGEventPost(kCGHIDEventTap, down);
+        post_event_marked(kCGHIDEventTap, down);
         CFRelease(down);
     }
 
@@ -244,13 +277,15 @@ void inject_mouse_click(uint32_t button)
         if (button > 2) {
             CGEventSetIntegerValueField(up, kCGMouseEventButtonNumber, button - 1);
         }
-        CGEventPost(kCGHIDEventTap, up);
+        post_event_marked(kCGHIDEventTap, up);
         CFRelease(up);
     }
 }
 
 void inject_scroll(double dx, double dy)
 {
+    if (g_dry_run) return;
+
     CGEventRef scroll = CGEventCreateScrollWheelEvent2(
         NULL,
         kCGScrollEventUnitPixel,
@@ -261,7 +296,7 @@ void inject_scroll(double dx, double dy)
     );
 
     if (scroll) {
-        CGEventPost(kCGHIDEventTap, scroll);
+        post_event_marked(kCGHIDEventTap, scroll);
         CFRelease(scroll);
     }
 }
@@ -269,6 +304,7 @@ void inject_scroll(double dx, double dy)
 void inject_text(const char *text)
 {
     if (!text || text[0] == '\0') return;
+    if (g_dry_run) return;
 
     size_t len = strlen(text);
     UniChar *chars = (UniChar *)malloc(sizeof(UniChar) * len);
@@ -281,7 +317,7 @@ void inject_text(const char *text)
     CGEventRef event = CGEventCreateKeyboardEvent(NULL, 0, true);
     if (event) {
         CGEventKeyboardSetUnicodeString(event, (CFIndex)len, chars);
-        CGEventPost(kCGHIDEventTap, event);
+        post_event_marked(kCGHIDEventTap, event);
         CFRelease(event);
     }
 
@@ -329,12 +365,14 @@ void inject_action(const openlogi_action_t *action)
             inject_text(action->u.text);
             break;
         case ACTION_SHELL_COMMAND:
+            if (g_dry_run) break;
             if (action->u.shell_cmd[0] != '\0') {
                 int res = system(action->u.shell_cmd);
                 (void)res;
             }
             break;
         case ACTION_APP_OPEN:
+            if (g_dry_run) break;
             if (action->u.app_path[0] != '\0') {
                 char cmd[512];
                 snprintf(cmd, sizeof(cmd), "open \"%s\" > /dev/null 2>&1", action->u.app_path);
@@ -343,6 +381,7 @@ void inject_action(const openlogi_action_t *action)
             }
             break;
         case ACTION_APPLE_SCRIPT:
+            if (g_dry_run) break;
             if (action->u.apple_script[0] != '\0') {
                 char cmd[1024];
                 snprintf(cmd, sizeof(cmd), "osascript -e '%s' > /dev/null 2>&1", action->u.apple_script);
@@ -351,6 +390,7 @@ void inject_action(const openlogi_action_t *action)
             }
             break;
         case ACTION_SLEEP:
+            if (g_dry_run) break;
             {
                 int res = system("pmset sleepnow > /dev/null 2>&1");
                 (void)res;
@@ -372,6 +412,7 @@ void inject_action(const openlogi_action_t *action)
             /* Handled at runtime/daemon level */
             break;
         case ACTION_WORKFLOW:
+            if (g_dry_run) break;
             if (action->u.workflow) {
                 for (size_t i = 0; i < action->u.workflow->step_count; i++) {
                     const workflow_step_t *step = &action->u.workflow->steps[i];

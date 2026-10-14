@@ -174,6 +174,16 @@ void inject_text(const char *text);
  */
 void inject_action(const openlogi_action_t *action);
 
+/**
+ * @brief Enable or disable injection dry-run mode (suppresses real OS events for tests).
+ */
+void inject_set_dry_run(bool enable);
+
+/**
+ * @brief Check if injection dry-run mode is enabled.
+ */
+bool inject_get_dry_run(void);
+
 #ifdef __cplusplus
 }
 #endif

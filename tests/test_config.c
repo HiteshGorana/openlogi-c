@@ -30,6 +30,7 @@ static const char *k_test_toml =
     "custom_name = \"Office mouse\"\n"
     "dpi = 1600\n"
     "dpi_presets = [800, 1600, 3200]\n"
+    "invert_scroll = true\n"
     "\n"
     "[devices.\"receiver:aabbccdd:slot:1\".smartshift]\n"
     "mode = \"ratchet\"\n"
@@ -72,6 +73,7 @@ static void test_config_parse_full_example(void)
     assert(strcmp(dev->device_key, "receiver:aabbccdd:slot:1") == 0);
     assert(strcmp(dev->custom_name, "Office mouse") == 0);
     assert(dev->dpi == 1600);
+    assert(dev->invert_scroll == true);
     assert(dev->dpi_preset_count == 3);
     assert(dev->dpi_presets[0] == 800);
     assert(dev->dpi_presets[1] == 1600);
@@ -89,6 +91,7 @@ static void test_config_parse_full_example(void)
     assert(strcmp(dev->app_profiles[0].app_id, "com.microsoft.VSCode") == 0);
     assert(strcmp(dev->app_profiles[1].app_id, "com.apple.Safari") == 0);
 
+    config_free(&cfg);
     TEST_PASS("test_config_parse_full_example");
 }
 
@@ -297,6 +300,64 @@ static void test_app_watcher(void)
     TEST_PASS("test_app_watcher");
 }
 
+static void test_config_free_workflows(void)
+{
+    const char *wf_toml =
+        "schema_version = 7\n"
+        "[devices.default]\n"
+        "[devices.default.bindings]\n"
+        "MiddleClick = { Workflow = [\n"
+        "    { PressKey = \"Cmd+Space\" },\n"
+        "    { Delay = { millis = 150 } },\n"
+        "    { TypeText = \"Terminal\" }\n"
+        "] }\n";
+
+    openlogi_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    char errbuf[256] = {0};
+    bool ok = config_parse_string(wf_toml, &cfg, errbuf, sizeof(errbuf));
+    assert(ok && "Parsing workflow TOML should succeed");
+    assert(cfg.device_count == 1);
+    assert(cfg.devices[0].default_profile.binding_count == 1);
+    assert(cfg.devices[0].default_profile.bindings[0].action.type == ACTION_WORKFLOW);
+    assert(cfg.devices[0].default_profile.bindings[0].action.u.workflow != NULL);
+    assert(cfg.devices[0].default_profile.bindings[0].action.u.workflow->step_count == 3);
+
+    /* Free config memory */
+    config_free(&cfg);
+    assert(cfg.device_count == 0);
+
+    TEST_PASS("test_config_free_workflows");
+}
+
+static void test_config_transactional_reload_on_error(void)
+{
+    openlogi_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    char errbuf[256] = {0};
+
+    /* First, load valid configuration */
+    bool ok = config_parse_string(k_test_toml, &cfg, errbuf, sizeof(errbuf));
+    assert(ok);
+    assert(cfg.device_count == 1);
+    assert(cfg.devices[0].dpi == 1600);
+
+    /* Attempt parsing syntax-broken TOML into existing cfg */
+    const char *bad_toml = "schema_version = 7\n[devices.default\nthis is invalid syntax !!!";
+    ok = config_parse_string(bad_toml, &cfg, errbuf, sizeof(errbuf));
+    assert(!ok && "Syntax error TOML should fail");
+    assert(strlen(errbuf) > 0);
+
+    /* Transactional check: existing config MUST NOT be wiped to 0 */
+    assert(cfg.schema_version == 7);
+    assert(cfg.device_count == 1);
+    assert(cfg.devices[0].dpi == 1600);
+    assert(strcmp(cfg.selected_device, "receiver:aabbccdd:slot:1") == 0);
+
+    config_free(&cfg);
+    TEST_PASS("test_config_transactional_reload_on_error");
+}
+
 int main(void)
 {
     test_suite_begin(&g_suite, "test_config", "TOML Schema Parser, Profile Resolution & Watchers");
@@ -304,6 +365,8 @@ int main(void)
     TEST_CASE_RUN(g_suite, test_config_parse_full_example);
     TEST_CASE_RUN(g_suite, test_config_action_mappings);
     TEST_CASE_RUN(g_suite, test_config_profile_resolution);
+    TEST_CASE_RUN(g_suite, test_config_free_workflows);
+    TEST_CASE_RUN(g_suite, test_config_transactional_reload_on_error);
     TEST_CASE_RUN(g_suite, test_config_file_watcher);
     TEST_CASE_RUN(g_suite, test_app_watcher);
 

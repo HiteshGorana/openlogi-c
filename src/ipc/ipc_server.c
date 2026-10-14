@@ -121,11 +121,14 @@ static yyjson_mut_val *handle_get_status(openlogi_daemon_ctx_t *ctx, yyjson_mut_
 
     /* Permissions */
     bool accessibility = false;
-    bool input_mon = true;
+    bool input_mon = false;
 #ifdef __APPLE__
     accessibility = AXIsProcessTrusted();
+    extern bool CGPreflightListenEventAccess(void);
+    input_mon = CGPreflightListenEventAccess();
 #else
     accessibility = true;
+    input_mon = true;
 #endif
 
     yyjson_mut_val *perms = yyjson_mut_obj(doc);
