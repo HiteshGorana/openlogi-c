@@ -15,6 +15,9 @@
 #include <assert.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <fcntl.h>
+#include <sys/file.h>
 
 static void test_installed_daemon_path_resolution(void)
 {
@@ -362,6 +365,82 @@ static void test_unified_openlogi_dispatch(void)
     TEST_PASS("test_unified_openlogi_dispatch");
 }
 
+static int run_uninstall_fixture(const char *program, const char *home, const char *arg)
+{
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        assert(setenv("HOME", home, 1) == 0);
+        char state[512];
+        snprintf(state, sizeof(state), "%s/state", home);
+        assert(setenv("XDG_STATE_HOME", state, 1) == 0);
+        int sink = open("/dev/null", O_WRONLY);
+        assert(sink >= 0);
+        assert(dup2(sink, STDOUT_FILENO) >= 0 && dup2(sink, STDERR_FILENO) >= 0);
+        close(sink);
+        execl(program, program, "uninstall", arg, (char *)NULL);
+        _exit(127);
+    }
+    int status;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status));
+    return WEXITSTATUS(status);
+}
+
+static void test_self_uninstall(void)
+{
+    char fixture[] = "/tmp/openlogi-uninstall.XXXXXX";
+    assert(mkdtemp(fixture));
+    char binary[512], aliases[3][512], config[512], unrelated[512];
+    snprintf(binary, sizeof(binary), "%s/openlogi", fixture);
+    snprintf(config, sizeof(config), "%s/config.toml", fixture);
+    snprintf(unrelated, sizeof(unrelated), "%s/other-tool", fixture);
+    FILE *source = fopen("bin/openlogi", "rb");
+    FILE *dest = fopen(binary, "wb");
+    assert(source && dest);
+    char buffer[8192];
+    size_t count;
+    while ((count = fread(buffer, 1, sizeof(buffer), source)) != 0)
+        assert(fwrite(buffer, 1, count, dest) == count);
+    assert(!ferror(source));
+    assert(fclose(source) == 0 && fclose(dest) == 0);
+    assert(chmod(binary, 0755) == 0);
+    const char *names[] = { "openlogid", "openlogictl", "openlogi_discover" };
+    for (size_t i = 0; i < 3; i++) {
+        snprintf(aliases[i], sizeof(aliases[i]), "%s/%s", fixture, names[i]);
+        assert(symlink("openlogi", aliases[i]) == 0);
+    }
+    dest = fopen(config, "w"); assert(dest); assert(fclose(dest) == 0);
+    dest = fopen(unrelated, "w"); assert(dest); assert(fclose(dest) == 0);
+    assert(run_uninstall_fixture(aliases[1], fixture, "--dry-run") == 0);
+    assert(access(binary, X_OK) == 0 && access(aliases[0], F_OK) == 0);
+    assert(run_uninstall_fixture(binary, fixture, "--unknown") != 0);
+    assert(access(binary, X_OK) == 0);
+    /* A directory under a command name must not be deleted, even partially. */
+    assert(unlink(aliases[0]) == 0 && mkdir(aliases[0], 0755) == 0);
+    assert(run_uninstall_fixture(binary, fixture, NULL) != 0);
+    assert(access(binary, X_OK) == 0 && access(aliases[1], F_OK) == 0);
+    assert(rmdir(aliases[0]) == 0); /* Missing aliases are allowed. */
+    char state[512], lock_dir[512], lock_path[512];
+    snprintf(state, sizeof(state), "%s/state", fixture);
+    snprintf(lock_dir, sizeof(lock_dir), "%s/state/openlogi", fixture);
+    snprintf(lock_path, sizeof(lock_path), "%s/state/openlogi/agent.lock", fixture);
+    assert(mkdir(state, 0755) == 0 && mkdir(lock_dir, 0755) == 0);
+    int lock_fd = open(lock_path, O_CREAT | O_RDWR, 0600);
+    assert(lock_fd >= 0 && flock(lock_fd, LOCK_EX | LOCK_NB) == 0);
+    /* An unreachable daemon must retain the binaries instead of guessing a PID. */
+    assert(run_uninstall_fixture(binary, fixture, NULL) != 0);
+    assert(access(binary, X_OK) == 0 && access(aliases[1], F_OK) == 0);
+    assert(close(lock_fd) == 0);
+    assert(run_uninstall_fixture(aliases[1], fixture, NULL) == 0);
+    assert(access(binary, F_OK) != 0);
+    struct stat st;
+    for (size_t i = 0; i < 3; i++) assert(lstat(aliases[i], &st) != 0);
+    assert(access(config, F_OK) == 0 && access(unrelated, F_OK) == 0);
+    assert(unlink(lock_path) == 0 && rmdir(lock_dir) == 0 && rmdir(state) == 0);
+    assert(unlink(config) == 0 && unlink(unrelated) == 0 && rmdir(fixture) == 0);
+}
+
 int main(void)
 {
     test_suite_begin(&g_suite, "test_cli", "CLI & IPC Client Subcommand Suite");
@@ -371,6 +450,7 @@ int main(void)
     TEST_CASE_RUN(g_suite, test_cli_subcommands);
     TEST_CASE_RUN(g_suite, test_installed_daemon_path_resolution);
     TEST_CASE_RUN(g_suite, test_unified_openlogi_dispatch);
+    TEST_CASE_RUN(g_suite, test_self_uninstall);
 
     test_suite_end(&g_suite);
     return (g_suite.failed == 0) ? 0 : 1;

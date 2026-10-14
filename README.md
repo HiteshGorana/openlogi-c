@@ -243,14 +243,22 @@ curl -fsSL https://raw.githubusercontent.com/HiteshGorana/openlogi-c/main/instal
 
 Use the same `--prefix` on later updates. To pin a version, pass `--version` followed by a published tag from the releases page.
 
-To uninstall the default prebuilt installation, first run `openlogi service disable` and stop any separately launched foreground daemon. Remove these files from `~/.local/bin`:
+To uninstall, run:
 
-- `openlogi`
-- `openlogid`
-- `openlogictl`
-- `openlogi_discover`
+```sh
+openlogi uninstall
+```
 
-Use your chosen prefix for a custom installation. Keep `~/.config/openlogi/config.toml` for a future reinstall, or remove it separately if no longer needed.
+This stops the login service and daemon, waits for hardware cleanup, and removes
+`openlogi`, `openlogid`, `openlogictl`, and `openlogi_discover` from the running
+installation's directory, including a custom prefix. Configuration is kept for
+a future reinstall. Preview the removal with `openlogi uninstall --dry-run`.
+If directory permissions prevent removal, the command reports the failure.
+Daemons using custom lock files must be stopped separately before uninstalling.
+
+For older versions without this command, run `openlogi service disable`, stop any
+foreground daemon, then remove those four commands from your installation's
+`bin` directory (default: `~/.local/bin`).
 
 ## Development
 

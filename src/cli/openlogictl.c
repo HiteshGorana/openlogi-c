@@ -7,6 +7,7 @@
 #include "ipc_server.h"
 #include "config.h"
 #include "tool_path.h"
+#include "single_instance.h"
 #include "subcommands.h"
 #include "yyjson.h"
 
@@ -23,6 +24,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/wait.h>
+#include <sys/file.h>
 
 #define COLOR_RESET   "\033[0m"
 #define COLOR_BOLD    "\033[1m"
@@ -1306,11 +1308,132 @@ static int cmd_autostart(int argc, char **argv)
 #endif
 }
 
+/* Wait for hardware teardown by observing the daemon's lifetime lock. */
+static int uninstall_stop_daemon(void)
+{
+    char path[512];
+    const char *state = getenv("XDG_STATE_HOME");
+    const char *home = getenv("HOME");
+    int n = state && state[0]
+        ? snprintf(path, sizeof(path), "%s/openlogi/agent.lock", state)
+        : snprintf(path, sizeof(path), "%s/.local/state/openlogi/agent.lock", home);
+    if (n < 0 || (size_t)n >= sizeof(path)) {
+        fprintf(stderr, "[-] Daemon lock path is too long. Installation retained.\n");
+        return 1;
+    }
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return errno == ENOENT ? 0 : 1;
+    if (flock(fd, LOCK_EX | LOCK_NB) == 0) { close(fd); return 0; }
+    if (errno != EWOULDBLOCK && errno != EAGAIN) { close(fd); return 1; }
+
+    /* Match the lock owner with the live RPC server before sending a signal. */
+    pid_t pid = single_instance_read_pid(path);
+    ipc_client_t client;
+    if (!ipc_client_connect(g_custom_socket[0] ? g_custom_socket : NULL, &client)) {
+        close(fd);
+        fprintf(stderr, "[-] Daemon is busy or unreachable. Stop it before uninstalling.\n");
+        return 1;
+    }
+    yyjson_doc *doc = ipc_client_call(&client, "openlogi.get_status", NULL);
+    ipc_client_close(&client);
+    yyjson_val *result = doc ? yyjson_obj_get(yyjson_doc_get_root(doc), "result") : NULL;
+    yyjson_val *value = result ? yyjson_obj_get(result, "pid") : NULL;
+    bool matches = pid > 1 && pid != getpid() && yyjson_is_uint(value) &&
+                   yyjson_get_uint(value) == (uint64_t)pid;
+    if (doc) yyjson_doc_free(doc);
+    if (!matches || (kill(pid, SIGTERM) != 0 && errno != ESRCH)) {
+        close(fd);
+        fprintf(stderr, "[-] Could not safely stop the daemon. Installation retained.\n");
+        return 1;
+    }
+    for (int i = 0; i < 100; i++) {
+        if (flock(fd, LOCK_EX | LOCK_NB) == 0) { close(fd); return 0; }
+        if (errno != EWOULDBLOCK && errno != EAGAIN) break;
+        usleep(100000);
+    }
+    close(fd);
+    fprintf(stderr, "[-] Daemon shutdown timed out. Installation retained; try again later.\n");
+    return 1;
+}
+
+static int cmd_uninstall(int argc, char **argv)
+{
+    bool dry_run = argc == 1 && strcmp(argv[0], "--dry-run") == 0;
+    if (argc != 0 && !dry_run) {
+        fprintf(stderr, "Usage: openlogi uninstall [--dry-run]\n");
+        return 1;
+    }
+    char binary[4096], paths[4][4096], service[4096];
+    const char *names[] = { "openlogid", "openlogictl", "openlogi_discover", "openlogi" };
+    const char *home = getenv("HOME");
+    if (!home || !home[0] ||
+        !tool_sibling_path(g_program_path, getenv("PATH"), "openlogi", binary, sizeof(binary))) {
+        fprintf(stderr, "[-] Could not locate the OpenLogi installation or HOME.\n");
+        return 1;
+    }
+    char *slash = strrchr(binary, '/');
+    if (!slash) return 1;
+    *slash = '\0';
+    for (size_t i = 0; i < 4; i++) {
+        int n = snprintf(paths[i], sizeof(paths[i]), "%s/%s", binary, names[i]);
+        if (n < 0 || (size_t)n >= sizeof(paths[i])) return 1;
+        struct stat st;
+        if (lstat(paths[i], &st) == 0) {
+            if (!S_ISREG(st.st_mode) && !S_ISLNK(st.st_mode)) {
+                fprintf(stderr, "[-] Refusing to remove non-file %s\n", paths[i]);
+                return 1;
+            }
+        } else if (errno != ENOENT) { perror(paths[i]); return 1; }
+    }
+#ifdef __APPLE__
+    int n = snprintf(service, sizeof(service), "%s/Library/LaunchAgents/io.github.openlogi.agent.plist", home);
+#else
+    int n = snprintf(service, sizeof(service), "%s/.config/systemd/user/openlogid.service", home);
+#endif
+    if (n < 0 || (size_t)n >= sizeof(service)) return 1;
+    if (dry_run) {
+        printf("Would stop the daemon and remove the login service: %s\n", service);
+        for (size_t i = 0; i < 4; i++) printf("Would remove: %s\n", paths[i]);
+        printf("Configuration will be kept.\n");
+        return 0;
+    }
+    /* Disable respawning before stopping any separately launched daemon. */
+    if (access(service, F_OK) == 0) {
+#ifdef __APPLE__
+        char target[128];
+        snprintf(target, sizeof(target), "gui/%u/io.github.openlogi.agent", (unsigned)getuid());
+        if (run_launchctl("print", target, NULL, true) == 0 &&
+            run_launchctl("bootout", target, NULL, false) != 0) {
+            fprintf(stderr, "[-] Could not stop the login service. Installation retained.\n");
+            return 1;
+        }
+#else
+        if (system("systemctl --user disable --now openlogid.service") != 0) {
+            fprintf(stderr, "[-] Could not disable the login service. Installation retained.\n");
+            return 1;
+        }
+#endif
+        if (unlink(service) != 0) { perror(service); return 1; }
+    } else if (errno != ENOENT) { perror(service); return 1; }
+    if (uninstall_stop_daemon() != 0) return 1;
+    for (size_t i = 0; i < 4; i++) {
+        if (unlink(paths[i]) != 0 && errno != ENOENT) {
+            perror(paths[i]);
+            fprintf(stderr, "[-] Uninstall incomplete. Check directory permissions and retry.\n");
+            return 1;
+        }
+    }
+    if (g_json_output) puts("{\"success\":true,\"configuration_kept\":true}");
+    else printf("[+] OpenLogi uninstalled. Your configuration has been kept.\n");
+    return 0;
+}
+
 static void print_usage(const char *progname)
 {
     printf("OpenLogi Pure C Control Tool (openlogictl) v%s\n", OPENLOGI_AGENT_VERSION);
     printf("Usage: %s [options] <command> [arguments]\n\n", progname);
     printf("Commands:\n");
+    printf("  uninstall [--dry-run]          Remove this installation; keep configuration\n");
     printf("  status                         Show daemon health, permissions, and active app\n");
     printf("  list, devices, inventory       List connected devices and properties\n");
     printf("  scroll [get|invert|res|smooth] Inspect or configure mouse scroll & wheel settings\n");
@@ -1370,7 +1493,9 @@ int ctl_main(int argc, char **argv)
     int sub_argc = argc - optind - 1;
     char **sub_argv = &argv[optind + 1];
 
-    if (strcmp(cmd, "status") == 0) {
+    if (strcmp(cmd, "uninstall") == 0) {
+        return cmd_uninstall(sub_argc, sub_argv);
+    } else if (strcmp(cmd, "status") == 0) {
         return cmd_status();
     } else if (strcmp(cmd, "list") == 0 || strcmp(cmd, "inventory") == 0 || strcmp(cmd, "devices") == 0) {
         return cmd_list();

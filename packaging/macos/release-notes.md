@@ -1,3 +1,14 @@
+This release adds self-uninstall:
+
+```sh
+openlogi uninstall
+```
+
+The command stops the login service and daemon, waits for hardware cleanup, and
+removes commands from the installation directory. Configuration is retained.
+Use `openlogi uninstall --dry-run` to preview removal. Daemons using custom lock
+files must be stopped separately.
+
 Install or update OpenLogi on macOS 13 or newer:
 
 ```sh
