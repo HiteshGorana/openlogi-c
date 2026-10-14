@@ -10,7 +10,7 @@ A small, native macOS daemon and command-line tool for customizing Logitech HID+
 
 **Development status:** beta. Core reliability, transactional config reloading, asynchronous action queues, reconnect handling, and mouse-wheel inversion are implemented and verified. Start with one mouse and review the [current limitations](#current-limitations). The [production readiness plan](improvements.md) tracks the completed fixes and release criteria.
 
-[Get started](#get-started) · [Commands](#commands) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Development](#development)
+[Get started](#get-started) · [Complete Usage Guide](USAGE.md) · [Commands](#commands) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Development](#development)
 
 ## What is here today
 
@@ -96,6 +96,8 @@ openlogi setup
 
 ## Commands
 
+> 📖 **Full Command Reference**: See [USAGE.md (Complete Usage Guide)](USAGE.md) for every command, argument, flag, and live examples.
+
 Most control commands require a running daemon. Help, version, action listing, and local configuration inspection can run independently.
 
 | Task | Command |
@@ -141,6 +143,8 @@ Press **Ctrl+C** to request shutdown. Run `openlogi service enable` afterward to
 The compatibility aliases remain available: `openlogid` runs the daemon, `openlogictl` runs control commands, and `openlogi_discover` runs hardware diagnostics.
 
 ## Configuration
+
+> 📖 **Configuration Manual**: See [USAGE.md#3-configuration-guide-configtoml](USAGE.md#3-configuration-guide-configtoml) for a comprehensive configuration template, wheel tuning, gestures, and per-app bindings.
 
 The default file is `~/.config/openlogi/config.toml`. If `XDG_CONFIG_HOME` is set, the path is `$XDG_CONFIG_HOME/openlogi/config.toml`. Run `openlogi config path` to see the CLI's path.
 
