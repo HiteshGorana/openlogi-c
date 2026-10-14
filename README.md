@@ -303,6 +303,79 @@ Right = "NextDesktop"
 
 For a specific mouse, replace `default` with a quoted device key from `openlogi list`, such as `[devices."device:YOUR_SERIAL"]`, and use that key in the remaining tables. Changes are watched automatically; `openlogi reload` also reloads the file on demand.
 
+### 6.1 Configuration Fields & Options Reference
+
+#### Root & Hardware Settings (`[devices.<device-key>]`)
+
+| Field | Type | Options / Allowed Values | Description & Meaning | Related CLI Command |
+|---|---|---|---|---|
+| `schema_version` | Integer | `7` | Configuration specification version. Must be `7` for current format. | `openlogi options` |
+| `dpi` | Integer | `200` – `32000` (e.g. `1600`) | Optical sensor sensitivity in DPI. Controls mouse pointer tracking speed. | `openlogi dpi set 1600` |
+| `dpi_presets` | Array of Ints | e.g. `[800, 1600, 3200]` | Preset DPI steps rotated in order when the `CycleDpi` action is triggered. | `openlogi config set dpi_presets "[800, 1600, 3200]"` |
+| `invert_scroll` | Boolean | `true` \| `false` | Inverts mouse wheel vertical scroll direction without affecting trackpad settings. | `openlogi scroll invert toggle` |
+| `scroll_resolution` | String | `"low"` \| `"high"` | `"low"` = discrete ratchet notches; `"high"` = fine-grained sub-pixel ticks (HID++ 0x2121). | `openlogi scroll hires enable` |
+
+#### SmartShift Scroll Wheel (`[devices.<device-key>.smartshift]`)
+
+| Field | Type | Options / Allowed Values | Description & Meaning | Related CLI Command |
+|---|---|---|---|---|
+| `mode` | String | `"ratchet"` \| `"freespin"` \| `"auto"` \| `"disabled"` | Scroll wheel mechanical clutch mode: `"ratchet"` for tactile clicky steps, `"freespin"` for silent frictionless spin, `"auto"` for automatic SmartShift disengage on quick flicks. | `openlogi smartshift set ratchet 16` |
+| `auto_disengage` | Integer | `1` – `255` (Default: `16`) | Flick sensitivity torque threshold before ratchet clutch auto-unlocks to free-spin mode. Lower values disengage more easily on gentler flicks; higher values require faster spinning. | `openlogi smartshift set auto 16` |
+
+#### Supported Physical Buttons (`[devices.<device-key>.bindings]`)
+
+| Button Name | Location & Hardware Functionality | Default / Common Action |
+|---|---|---|
+| `MiddleClick` | Depressing the main center scroll wheel | `{ CustomShortcut = "Cmd+Shift+T" }` |
+| `Back` | Lower thumb side button on the mouse flank | `"BrowserBack"` |
+| `Forward` | Upper thumb side button on the mouse flank | `"BrowserForward"` |
+| `DpiToggle` | Top mode button behind the scroll wheel | `"CycleDpi"` or `"ToggleSmartShift"` |
+| `GestureButton` | Thumb rest paddle button (supports click + 4 swipe directions) | Directional table (see below) |
+| `ThumbwheelScrollUp` | Horizontal thumb wheel rotated upward | `"ScrollLeft"` / `"PrevTab"` |
+| `ThumbwheelScrollDown`| Horizontal thumb wheel rotated downward | `"ScrollRight"` / `"NextTab"` |
+| `WheelTiltLeft` | Main wheel tilted left (models with tilt wheel) | `"ScrollLeft"` / `"AppSwitchPrev"` |
+| `WheelTiltRight` | Main wheel tilted right (models with tilt wheel) | `"ScrollRight"` / `"AppSwitchNext"` |
+
+#### Action Formats & Value Syntax
+
+| Format | Syntax Example | Description & Meaning |
+|---|---|---|
+| **Catalog Action** | `Back = "BrowserBack"` | Executes one of the 45 built-in native actions (`MissionControl`, `AppExpose`, `ShowDesktop`, `Undo`, `Copy`, `Paste`, `VolumeUp`, `CycleDpi`, etc.). Run `openlogi actions` for the full catalog. |
+| **Custom Shortcut** | `MiddleClick = { CustomShortcut = "Cmd+Shift+T" }` | Injects keyboard chord combining modifiers (`Cmd`, `Ctrl`, `Alt`/`Option`, `Shift`) and a key (`Space`, `Return`, `Tab`, `F1`-`F12`, or characters). |
+| **Held Modifier** | `Back = { HoldShortcut = "Cmd" }` | Holds down the specified key or modifier while the physical mouse button is pressed, and releases it on button release (great for Cmd+Click or Option+Drag). |
+| **Type Text** | `MiddleClick = { TypeText = "MyText" }` | Types out an arbitrary UTF-8 text string sequentially via synthetic keyboard events. |
+| **Exact DPI Preset** | `DpiToggle = { SetDpiPreset = 2400 }` | Directly switches sensor resolution to an exact DPI value on press. |
+| **Open Application** | `DpiToggle = { OpenApplication = "/Applications/Safari.app" }` | Launches or focuses an application by bundle identifier or path. |
+| **Run Shell Command** | `Back = { RunShellCommand = "open -a Terminal ~" }` | Asynchronously executes a system shell command without blocking input. |
+| **Run AppleScript** | `Forward = { RunAppleScript = "tell app \"Music\" to next track" }` | Executes an AppleScript snippet asynchronously. |
+| **Multi-Step Macro** | `GestureButton = { Workflow = [ { PressKey = "Cmd+Space" }, { Delay = 100 }, { TypeText = "Terminal" }, { PressKey = "Return" } ] }` | Executes an automated sequence of keystrokes and millisecond delays. |
+
+#### 5-Way Directional Gestures (`[devices.<device-key>.bindings.GestureButton]`)
+
+| Gesture Field | Trigger Mechanism | Description & Meaning | CLI Command |
+|---|---|---|---|
+| `Click` | Press and release button without mouse movement | Plain tap action (within 160 ms or < 40 units displacement). | `openlogi monitor` |
+| `Up` | Hold button + push mouse forward | Swipe Up action (displacement > 40 units, angle within ±45°). | `openlogi monitor` |
+| `Down` | Hold button + pull mouse backward | Swipe Down action (displacement > 40 units, angle within ±45°). | `openlogi monitor` |
+| `Left` | Hold button + slide mouse left | Swipe Left action (displacement > 40 units, angle within ±45°). | `openlogi monitor` |
+| `Right` | Hold button + slide mouse right | Swipe Right action (displacement > 40 units, angle within ±45°). | `openlogi monitor` |
+
+### 6.2 Useful CLI Commands for Managing Configuration
+
+| Task / Goal | Command | Description |
+|---|---|---|
+| **View Active Config** | `openlogi config show` | Prints the complete currently loaded `config.toml`. |
+| **Get Config Path** | `openlogi config path` | Displays the absolute path of the configuration file. |
+| **Read a Setting** | `openlogi config get dpi` | Reads the current value of a key from `config.toml`. |
+| **Update a Setting** | `openlogi config set dpi 1600` | Updates setting in `config.toml` and automatically hot-reloads the daemon. |
+| **Set DPI in Real Time** | `openlogi dpi set 2400` | Instantly adjusts the optical sensor DPI on the active mouse. |
+| **Set SmartShift Mode** | `openlogi smartshift set ratchet 16` | Sets the SmartShift wheel mode (`ratchet`/`freespin`/`auto`) and threshold. |
+| **Toggle Invert Scroll** | `openlogi scroll invert toggle` | Toggles mouse wheel scroll direction inversion. |
+| **Browse All 53 Actions**| `openlogi actions` | Lists every supported action with names, aliases, and descriptions. |
+| **Interactive Wizard** | `openlogi setup` | Launches interactive ANSI terminal setup wizard to configure bindings step-by-step. |
+| **Live Event Stream** | `openlogi monitor` | Streams intercepted button clicks, gestures, and coordinates in real time. |
+| **Force Reload** | `openlogi reload` | Immediately re-reads and applies `config.toml` without restarting the process. |
+
 ---
 
 ## 7. Autostart & Service Management
