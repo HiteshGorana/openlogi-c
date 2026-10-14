@@ -309,11 +309,16 @@ static void test_cli_subcommands(void)
     /* 16. openlogictl permissions & --json permissions */
     snprintf(cmd, sizeof(cmd), "%s permissions > /dev/null 2>&1", cli);
     ret = system(cmd);
-    assert(ret == 0 || ret == 1); /* 0 if granted, 1 if denied */
+    assert(WIFEXITED(ret) && (WEXITSTATUS(ret) == 0 || WEXITSTATUS(ret) == 1));
 
     snprintf(cmd, sizeof(cmd), "%s --json permissions > /dev/null 2>&1", cli);
     ret = system(cmd);
-    assert(ret == 0 || ret == 1);
+    assert(WIFEXITED(ret) && (WEXITSTATUS(ret) == 0 || WEXITSTATUS(ret) == 1));
+
+    /* 17. openlogictl --json doctor */
+    snprintf(cmd, sizeof(cmd), "%s -s %s --json doctor > /dev/null 2>&1", cli, sock_path);
+    ret = system(cmd);
+    assert(WIFEXITED(ret) && (WEXITSTATUS(ret) == 0 || WEXITSTATUS(ret) == 1));
 
     ipc_server_stop();
     TEST_PASS("test_cli_subcommands");
@@ -360,6 +365,11 @@ static void test_unified_openlogi_dispatch(void)
     snprintf(cmd, sizeof(cmd), "%s discover > /dev/null 2>&1", unified);
     ret = system(cmd);
     assert(ret == 0);
+
+    /* 7. openlogi --json doctor */
+    snprintf(cmd, sizeof(cmd), "%s --json doctor > /dev/null 2>&1", unified);
+    ret = system(cmd);
+    assert(WIFEXITED(ret) && (WEXITSTATUS(ret) == 0 || WEXITSTATUS(ret) == 1));
 
     /* 7. symlink openlogi_discover */
     const char *disc = "bin/openlogi_discover";

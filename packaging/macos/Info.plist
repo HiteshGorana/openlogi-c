@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>io.github.openlogi.agent</string>
+    <key>CFBundleName</key>
+    <string>OpenLogi</string>
+    <key>CFBundleDisplayName</key>
+    <string>OpenLogi</string>
+    <key>CFBundleExecutable</key>
+    <string>openlogi</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.5</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSAccessibilityUsageDescription</key>
+    <string>OpenLogi requires Accessibility permissions to intercept Logitech mouse buttons, wheel events, and dispatch gestures.</string>
+    <key>NSInputMonitoringUsageDescription</key>
+    <string>OpenLogi requires Input Monitoring permissions to communicate with Logitech USB and Bluetooth devices.</string>
+</dict>
+</plist>

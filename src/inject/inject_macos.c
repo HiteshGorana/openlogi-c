@@ -288,7 +288,7 @@ void inject_scroll(double dx, double dy)
 
     CGEventRef scroll = CGEventCreateScrollWheelEvent2(
         NULL,
-        kCGScrollEventUnitPixel,
+        kCGScrollEventUnitLine,
         2,
         (int32_t)dy,
         (int32_t)dx,

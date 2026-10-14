@@ -182,6 +182,57 @@ if [ -f "$bin_dir/openlogi" ]; then
     for alias in openlogid openlogictl openlogi_discover; do
         ln -sf openlogi "$bin_dir/$alias"
     done
+    if [ "$(uname -s)" = Darwin ]; then
+        codesign --force --deep -s - --identifier io.github.openlogi.agent "$bin_dir/openlogi" 2>/dev/null || :
+        can_install_app=0
+        if [ -w "/Applications" ]; then
+            app_dest="/Applications/OpenLogi.app"
+            can_install_app=1
+        elif [ -n "${HOME:-}" ]; then
+            mkdir -p "${HOME:-}/Applications" 2>/dev/null || :
+            if [ -w "${HOME:-}/Applications" ]; then
+                app_dest="${HOME:-}/Applications/OpenLogi.app"
+                can_install_app=1
+            fi
+        fi
+        if [ "$can_install_app" -eq 1 ] && [ -z "${MOCK_ROOT:-}" ]; then
+            mkdir -p "$app_dest/Contents/MacOS" "$app_dest/Contents/Resources"
+            cp -f "$bin_dir/openlogi" "$app_dest/Contents/MacOS/openlogi"
+            for alias in openlogid openlogictl openlogi_discover; do
+                ln -sf openlogi "$app_dest/Contents/MacOS/$alias"
+            done
+            cat << 'EOF' > "$app_dest/Contents/Info.plist"
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>io.github.openlogi.agent</string>
+    <key>CFBundleName</key>
+    <string>OpenLogi</string>
+    <key>CFBundleDisplayName</key>
+    <string>OpenLogi</string>
+    <key>CFBundleExecutable</key>
+    <string>openlogi</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>LSUIElement</key>
+    <true/>
+</dict>
+</plist>
+EOF
+            if [ -f "$work_dir/unpacked/AppIcon.icns" ]; then
+                cp -f "$work_dir/unpacked/AppIcon.icns" "$app_dest/Contents/Resources/AppIcon.icns"
+            elif [ -f "packaging/macos/AppIcon.icns" ]; then
+                cp -f "packaging/macos/AppIcon.icns" "$app_dest/Contents/Resources/AppIcon.icns"
+            fi
+            codesign --force --deep -s - --identifier io.github.openlogi.agent "$app_dest" 2>/dev/null || :
+            /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app_dest" 2>/dev/null || :
+            touch "$app_dest" 2>/dev/null || :
+        fi
+    fi
 fi
 if [ "$restart_needed" -eq 1 ]; then
     if [ "$restart_mode" = service ]; then
@@ -203,11 +254,14 @@ completed=1
 printf '\nOpenLogi %s installed in %s\n' "$version" "$bin_dir"
 printf 'Run this installer again to update to the latest release.\n'
 if [ -x "$bin_dir/openlogi" ]; then
-    printf '\nGrant openlogi Accessibility and Input Monitoring access in System Settings > Privacy & Security.\n'
-    printf 'Then start the login service and configure your mouse:\n  '
+    printf '\nTo check permissions, start the service, or configure your mouse:\n  '
+    quote "$bin_dir/openlogi"; printf ' doctor\n  '
     quote "$bin_dir/openlogi"; printf ' service enable\n  '
-    quote "$bin_dir/openlogi"; printf ' setup\n  '
-    quote "$bin_dir/openlogi"; printf ' status\n'
+    quote "$bin_dir/openlogi"; printf ' setup\n'
+    if [ -t 0 ] && [ -z "${MOCK_ROOT:-}" ]; then
+        printf '\nRunning OpenLogi Doctor now to verify setup and permissions...\n\n'
+        "$bin_dir/openlogi" doctor || :
+    fi
 else
     printf '\nGrant openlogid Accessibility and Input Monitoring access in System Settings > Privacy & Security.\n'
     printf 'Then start the login service and configure your mouse:\n  '

@@ -170,6 +170,26 @@ static void test_hook_lifecycle(void)
     (void)hook_check_permission();
 }
 
+static hook_action_t invert_hook_cb(const hook_event_t *ev, void *user_data)
+{
+    (void)user_data;
+    if (ev && ev->type == HOOK_EVENT_SCROLL) {
+        return HOOK_ACTION_INVERT;
+    }
+    return HOOK_ACTION_PASS;
+}
+
+static void test_hook_scroll_actions(void)
+{
+    hook_event_t ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type = HOOK_EVENT_SCROLL;
+    ev.scroll_dy = -1.0;
+
+    assert(invert_hook_cb(&ev, NULL) == HOOK_ACTION_INVERT);
+    assert(dummy_hook_cb(&ev, NULL) == HOOK_ACTION_PASS);
+}
+
 int main(void)
 {
     test_suite_begin(&g_suite, "test_diversion_and_hook", "ReprogControls 0x1B04 Diversion & Event Hooks");
@@ -180,6 +200,7 @@ int main(void)
     TEST_CASE_RUN(g_suite, test_reprog_event_decoding);
     TEST_CASE_RUN(g_suite, test_diversion_safety_registry_and_teardown);
     TEST_CASE_RUN(g_suite, test_hook_lifecycle);
+    TEST_CASE_RUN(g_suite, test_hook_scroll_actions);
 
     test_suite_end(&g_suite);
     return (g_suite.failed == 0) ? 0 : 1;

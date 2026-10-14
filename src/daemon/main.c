@@ -227,22 +227,38 @@ static void daemon_dispatch_gesture(openlogi_daemon_ctx_t *ctx, config_button_id
     }
 }
 
+static const config_device_t *daemon_get_active_device_config(const openlogi_daemon_ctx_t *ctx)
+{
+    if (!ctx || ctx->config.device_count == 0) return NULL;
+    const char *sel = ctx->config.selected_device;
+    if (sel[0] != '\0') {
+        for (size_t i = 0; i < ctx->config.device_count; i++) {
+            if (strcmp(ctx->config.devices[i].device_key, sel) == 0) {
+                return &ctx->config.devices[i];
+            }
+        }
+    }
+    for (size_t i = 0; i < ctx->config.device_count; i++) {
+        if (strcmp(ctx->config.devices[i].device_key, "default") == 0) {
+            return &ctx->config.devices[i];
+        }
+    }
+    return &ctx->config.devices[0];
+}
+
 static hook_action_t on_hook_event(const hook_event_t *event, void *user_data)
 {
     (void)user_data;
     if (!event) return HOOK_ACTION_PASS;
 
-    /* Handle scroll events with inversion */
+    /* Handle scroll events with in-place inversion */
     if (event->type == HOOK_EVENT_SCROLL) {
         bool invert = false;
-        if (g_daemon_ctx.config.device_count > 0) {
-            invert = g_daemon_ctx.config.devices[0].invert_scroll;
+        const config_device_t *cdev = daemon_get_active_device_config(&g_daemon_ctx);
+        if (cdev) {
+            invert = cdev->invert_scroll;
         }
-        if (invert) {
-            inject_scroll(-event->scroll_dx, -event->scroll_dy);
-            return HOOK_ACTION_SUPPRESS;
-        }
-        return HOOK_ACTION_PASS;
+        return invert ? HOOK_ACTION_INVERT : HOOK_ACTION_PASS;
     }
 
     /* Map intercepted OS mouse event to button identifier */
@@ -943,6 +959,11 @@ int daemon_main(int argc, char **argv)
         single_instance_update_pid(lock_fd, getpid());
     }
 
+#if defined(__APPLE__) || defined(__linux__)
+    setlinebuf(stdout);
+    setlinebuf(stderr);
+#endif
+
     printf("[openlogid] Starting OpenLogi Daemon v%s (PID: %d)...\n", OPENLOGI_AGENT_VERSION, getpid());
 
     /* 1. Initialize Signal Handlers & Safety Registry */
@@ -1093,9 +1114,48 @@ int daemon_main(int argc, char **argv)
                 last_app_tick_ms = now_ms;
                 app_watch_tick();
             }
+
+            /* If the input hook could not be started at boot due to missing macOS permissions,
+             * retry automatically once permissions are granted in System Settings. */
+            if (!hook_is_running()) {
+                static uint64_t last_hook_retry_ms = 0;
+                if (now_ms >= last_hook_retry_ms + 1000) {
+                    last_hook_retry_ms = now_ms;
+#ifdef __APPLE__
+                    if (AXIsProcessTrusted()) {
+                        if (hook_init(on_hook_event, NULL) && hook_start()) {
+                            printf("[openlogid] Accessibility permission granted! Input interception hook activated.\n");
+                            daemon_apply_diversion(&g_daemon_ctx);
+                            ipc_server_broadcast_event("hook_activated", "{\"active\":true}");
+                        }
+                    }
+#else
+                    if (hook_init(on_hook_event, NULL) && hook_start()) {
+                        daemon_apply_diversion(&g_daemon_ctx);
+                        ipc_server_broadcast_event("hook_activated", "{\"active\":true}");
+                    }
+#endif
+                }
+            }
         } else {
             /* In STANDBY: skip button ticks, app polling, and active scroll math completely.
-             * Perform bounded fallback hardware rescan every 5 seconds for sleeping paired devices. */
+             * If permissions were granted while in standby, initialize and activate the event tap hook. */
+            if (!hook_is_running()) {
+#ifdef __APPLE__
+                if (AXIsProcessTrusted()) {
+                    if (hook_init(on_hook_event, NULL) && hook_start()) {
+                        printf("[openlogid] Accessibility permission granted! Input interception hook activated.\n");
+                        ipc_server_broadcast_event("hook_activated", "{\"active\":true}");
+                    }
+                }
+#else
+                if (hook_init(on_hook_event, NULL) && hook_start()) {
+                    ipc_server_broadcast_event("hook_activated", "{\"active\":true}");
+                }
+#endif
+            }
+
+            /* Perform bounded fallback hardware rescan every 5 seconds for sleeping paired devices. */
             if (now_ms >= last_standby_scan_ms + 5000) {
                 last_standby_scan_ms = now_ms;
                 daemon_probe_hardware(&g_daemon_ctx);

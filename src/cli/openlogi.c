@@ -22,10 +22,11 @@ static void print_unified_help(const char *progname)
     printf("Native, ultra-lightweight driver and CLI for Logitech peripherals\n\n");
     printf("Usage: %s <command> [arguments] [options]\n\n", progname);
     printf("Core Commands:\n");
+    printf("  doctor                         Run end-to-end permissions, daemon, and hardware diagnostic wizard\n");
     printf("  daemon                         Run background HID++ driver (options: -d/--daemon, -v)\n");
     printf("  stop                           Stop running background daemon or service\n");
     printf("  restart                        Restart running background daemon or service\n");
-    printf("  permissions [request|open]     Inspect or configure macOS Accessibility & Input Monitoring\n");
+    printf("  permissions [request|reveal]   Inspect or configure macOS Accessibility & Input Monitoring\n");
     printf("  uninstall [--dry-run]          Remove this installation; keep configuration\n");
     printf("  service [status|enable|disable|start|restart|stop] Manage login autostart service (launchd/systemd)\n");
     printf("  discover, scan                 Direct hardware diagnostic inspection and register probe\n");

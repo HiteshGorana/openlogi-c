@@ -91,15 +91,30 @@ static CGEventRef event_tap_callback(
     }
     else if (type == kCGEventScrollWheel) {
         int64_t is_continuous = CGEventGetIntegerValueField(event, kCGScrollWheelEventIsContinuous);
-        if (is_continuous != 0) {
-            return event; /* Touchpad continuous gesture: never intercept or reverse */
+        int64_t phase = CGEventGetIntegerValueField(event, kCGScrollWheelEventScrollPhase);
+        int64_t momentum_phase = CGEventGetIntegerValueField(event, kCGScrollWheelEventMomentumPhase);
+        if (is_continuous != 0 || phase != 0 || momentum_phase != 0) {
+            return event; /* Touchpad continuous/gesture: NEVER intercept, modify, or reverse */
         }
         ev.type = HOOK_EVENT_SCROLL;
         ev.scroll_dy = CGEventGetDoubleValueField(event, kCGScrollWheelEventDeltaAxis1);
         ev.scroll_dx = CGEventGetDoubleValueField(event, kCGScrollWheelEventDeltaAxis2);
 
-        if (g_callback(&ev, g_user_data) == HOOK_ACTION_SUPPRESS) {
+        hook_action_t action = g_callback(&ev, g_user_data);
+        if (action == HOOK_ACTION_SUPPRESS) {
             return NULL;
+        }
+        if (action == HOOK_ACTION_INVERT) {
+            int64_t axis1 = CGEventGetIntegerValueField(event, kCGScrollWheelEventDeltaAxis1);
+            double fixedpt_axis1 = CGEventGetDoubleValueField(event, kCGScrollWheelEventFixedPtDeltaAxis1);
+            int64_t point_axis1 = CGEventGetIntegerValueField(event, kCGScrollWheelEventPointDeltaAxis1);
+
+            /* Invert vertical scroll axis in-place preserving sub-pixel and line precision */
+            CGEventSetIntegerValueField(event, kCGScrollWheelEventDeltaAxis1, -axis1);
+            CGEventSetDoubleValueField(event, kCGScrollWheelEventFixedPtDeltaAxis1, -fixedpt_axis1);
+            CGEventSetIntegerValueField(event, kCGScrollWheelEventPointDeltaAxis1, -point_axis1);
+
+            return event;
         }
     }
 

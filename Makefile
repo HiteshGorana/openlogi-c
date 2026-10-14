@@ -106,9 +106,23 @@ TEST_BINS = $(BIN_DIR)/test_hidpp_packet \
 
 TOOLS = $(BIN_DIR)/openlogi $(BIN_DIR)/openlogid $(BIN_DIR)/openlogictl $(BIN_DIR)/openlogi_discover
 
-.PHONY: all test clean dirs tools install uninstall strip asan help info
+.PHONY: all test clean dirs tools install uninstall strip asan help info app
 
 all: dirs $(CORE_OBJS) $(TEST_BINS) $(TOOLS)
+
+app: $(BIN_DIR)/openlogi
+ifeq ($(UNAME_S),Darwin)
+	@mkdir -p $(BIN_DIR)/OpenLogi.app/Contents/MacOS
+	@mkdir -p $(BIN_DIR)/OpenLogi.app/Contents/Resources
+	@cp -f $(BIN_DIR)/openlogi $(BIN_DIR)/OpenLogi.app/Contents/MacOS/openlogi
+	@ln -sf openlogi $(BIN_DIR)/OpenLogi.app/Contents/MacOS/openlogid
+	@ln -sf openlogi $(BIN_DIR)/OpenLogi.app/Contents/MacOS/openlogictl
+	@ln -sf openlogi $(BIN_DIR)/OpenLogi.app/Contents/MacOS/openlogi_discover
+	@cp -f packaging/macos/Info.plist $(BIN_DIR)/OpenLogi.app/Contents/Info.plist
+	@if [ -f packaging/macos/AppIcon.icns ]; then cp -f packaging/macos/AppIcon.icns $(BIN_DIR)/OpenLogi.app/Contents/Resources/AppIcon.icns; fi
+	@codesign --force --deep -s - --identifier io.github.openlogi.agent $(BIN_DIR)/OpenLogi.app 2>/dev/null || true
+	@echo "[+] Successfully created $(BIN_DIR)/OpenLogi.app"
+endif
 
 dirs:
 	@mkdir -p $(BUILD_DIR)/src/hid
@@ -241,7 +255,23 @@ install: tools
 	@ln -sf openlogi $(DESTDIR)$(BINDIR)/openlogictl
 	@ln -sf openlogi $(DESTDIR)$(BINDIR)/openlogi_discover
 ifeq ($(UNAME_S),Darwin)
-	@codesign --force --deep -s - $(DESTDIR)$(BINDIR)/openlogi 2>/dev/null || true
+	@codesign --force --deep -s - --identifier io.github.openlogi.agent $(DESTDIR)$(BINDIR)/openlogi 2>/dev/null || true
+	@# Also install OpenLogi.app to ~/Applications (or /Applications) for macOS System Settings visibility
+	@APP_DEST="$(HOME)/Applications/OpenLogi.app"; \
+	if [ -w "/Applications" ]; then APP_DEST="/Applications/OpenLogi.app"; fi; \
+	if [ -z "$(DESTDIR)" ]; then \
+		mkdir -p "$$APP_DEST/Contents/MacOS" "$$APP_DEST/Contents/Resources"; \
+		install -m 755 $(BIN_DIR)/openlogi "$$APP_DEST/Contents/MacOS/openlogi"; \
+		ln -sf openlogi "$$APP_DEST/Contents/MacOS/openlogid"; \
+		ln -sf openlogi "$$APP_DEST/Contents/MacOS/openlogictl"; \
+		ln -sf openlogi "$$APP_DEST/Contents/MacOS/openlogi_discover"; \
+		cp -f packaging/macos/Info.plist "$$APP_DEST/Contents/Info.plist"; \
+		if [ -f packaging/macos/AppIcon.icns ]; then cp -f packaging/macos/AppIcon.icns "$$APP_DEST/Contents/Resources/AppIcon.icns"; fi; \
+		codesign --force --deep -s - --identifier io.github.openlogi.agent "$$APP_DEST" 2>/dev/null || true; \
+		/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$$APP_DEST" 2>/dev/null || true; \
+		touch "$$APP_DEST" 2>/dev/null || true; \
+		echo "[+] Created macOS application bundle at $$APP_DEST"; \
+	fi
 endif
 	@echo "[+] Successfully installed OpenLogi C tools to $(DESTDIR)$(BINDIR)"
 
@@ -261,6 +291,7 @@ uninstall:
 	@rm -f $(DESTDIR)$(BINDIR)/openlogid
 	@rm -f $(DESTDIR)$(BINDIR)/openlogictl
 	@rm -f $(DESTDIR)$(BINDIR)/openlogi_discover
+	@rm -rf $(HOME)/Applications/OpenLogi.app /Applications/OpenLogi.app 2>/dev/null || true
 	@# Clean up runtime state socket and pid locks
 	@-rm -f $(HOME)/.local/state/openlogi/openlogi.sock /tmp/openlogi.sock
 	@-rm -f $(HOME)/.local/state/openlogi/openlogi.lock /tmp/openlogid.lock

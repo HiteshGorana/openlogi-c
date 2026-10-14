@@ -37,7 +37,8 @@ typedef struct {
  */
 typedef enum {
     HOOK_ACTION_PASS = 0,     /* Pass event to OS (zero latency) */
-    HOOK_ACTION_SUPPRESS = 1  /* Intercept and suppress event from reaching applications */
+    HOOK_ACTION_SUPPRESS = 1, /* Intercept and suppress event from reaching applications */
+    HOOK_ACTION_INVERT = 2    /* Invert scroll event in-place and pass to OS */
 } hook_action_t;
 
 /**

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="packaging/macos/AppIcon.png" width="128" height="128" alt="OpenLogi Logo" />
+</p>
+
 # OpenLogi C
 
 [![macOS CI](https://github.com/HiteshGorana/openlogi-c/actions/workflows/macos.yml/badge.svg)](https://github.com/HiteshGorana/openlogi-c/actions/workflows/macos.yml)
@@ -51,9 +55,17 @@ Alternatively, use `~/.local/bin/openlogi` directly. Archives are also available
 
 ### 2. Grant permissions
 
-In **System Settings → Privacy & Security**, grant `openlogi` both **Accessibility** and **Input Monitoring** access. Use the **+** button and **Cmd+Shift+G** to select `~/.local/bin/openlogi`.
+Run the automated diagnostic wizard to verify your environment and authorize permissions:
 
-Grant access to the executable you will actually run. A source build or custom-prefix installation has a different path. Current releases use ad-hoc signing, so macOS may require permissions again after an update.
+```sh
+openlogi doctor
+```
+
+Alternatively, open **System Settings → Privacy & Security**:
+- Under **Accessibility**, toggle ON **OpenLogi** (or drag `/Applications/OpenLogi.app` from Finder).
+- Under **Input Monitoring**, toggle ON **OpenLogi**.
+
+OpenLogi installs as `/Applications/OpenLogi.app` with bundle ID `io.github.openlogi.agent`, so macOS retains your permissions across updates and rebuilds.
 
 ### 3. Create your bindings
 
@@ -88,6 +100,8 @@ Most control commands require a running daemon. Help, version, action listing, a
 
 | Task | Command |
 | --- | --- |
+| Run setup & permissions diagnostic | `openlogi doctor` |
+| Inspect or configure permissions | `openlogi permissions [request\|reveal\|reset]` |
 | Show version | `openlogi --version` |
 | Inspect daemon status | `openlogi status` |
 | List device keys and reported settings | `openlogi list` |

@@ -45,6 +45,11 @@ static bool g_autospawn = false;
 static char g_custom_socket[512] = { 0 };
 static const char *g_program_path;
 
+static int cmd_doctor(int argc, char **argv);
+static int cmd_autostart(int argc, char **argv);
+static int cmd_permissions(int argc, char **argv);
+static int cmd_stop(void);
+
 static void print_banner(void)
 {
     if (g_json_output) return;
@@ -1027,6 +1032,16 @@ static int cmd_setup(void)
     print_banner();
     printf(COLOR_BOLD "Interactive Device Setup Wizard" COLOR_RESET "\n\n");
 
+#ifdef __APPLE__
+    if (!AXIsProcessTrusted() || !CGPreflightListenEventAccess()) {
+        printf(COLOR_BOLD COLOR_YELLOW "[!] Setup Notice: Required macOS permissions are missing." COLOR_RESET "\n");
+        printf("    Launching OpenLogi Doctor to guide you through authorization...\n\n");
+        if (cmd_doctor(0, NULL) != 0) {
+            return 1;
+        }
+    }
+#endif
+
     ipc_client_t client;
     if (!connect_or_warn(&client)) {
         printf("OpenLogi daemon must be running to configure devices.\n");
@@ -1191,7 +1206,16 @@ static int cmd_autostart(int argc, char **argv)
     } else if (strcmp(action, "enable") == 0) {
         char bin_path[4096];
         bool is_unified = false;
-        if (tool_sibling_path(g_program_path, getenv("PATH"), "openlogi", bin_path, sizeof(bin_path))) {
+
+        char user_app[4096];
+        snprintf(user_app, sizeof(user_app), "%s/Applications/OpenLogi.app/Contents/MacOS/openlogi", home);
+        if (access("/Applications/OpenLogi.app/Contents/MacOS/openlogi", X_OK) == 0) {
+            strncpy(bin_path, "/Applications/OpenLogi.app/Contents/MacOS/openlogi", sizeof(bin_path) - 1);
+            is_unified = true;
+        } else if (access(user_app, X_OK) == 0) {
+            strncpy(bin_path, user_app, sizeof(bin_path) - 1);
+            is_unified = true;
+        } else if (tool_sibling_path(g_program_path, getenv("PATH"), "openlogi", bin_path, sizeof(bin_path))) {
             is_unified = true;
         } else if (!tool_sibling_path(g_program_path, getenv("PATH"), "openlogid", bin_path, sizeof(bin_path))) {
             fprintf(stderr, "[-] Could not find openlogi or openlogid binary. Reinstall OpenLogi.\n");
@@ -1391,82 +1415,327 @@ static int cmd_autostart(int argc, char **argv)
 #endif
 }
 
-static int cmd_permissions(int argc, char **argv)
+static const char *get_preferred_app_target(char *out_buf, size_t max_len)
+{
+    const char *home = getenv("HOME");
+    char user_app[1024];
+    if (home) {
+        snprintf(user_app, sizeof(user_app), "%s/Applications/OpenLogi.app", home);
+    } else {
+        user_app[0] = '\0';
+    }
+
+    if (access("/Applications/OpenLogi.app", F_OK) == 0) {
+        snprintf(out_buf, max_len, "/Applications/OpenLogi.app");
+        return out_buf;
+    } else if (user_app[0] && access(user_app, F_OK) == 0) {
+        snprintf(out_buf, max_len, "%s", user_app);
+        return out_buf;
+    }
+    return NULL;
+}
+
+static bool query_daemon_permissions(ipc_client_t *client, bool *out_acc, bool *out_inp, bool *out_hook)
+{
+    if (!client || client->fd < 0) return false;
+    char *raw = ipc_client_call_raw(client, "openlogi.get_status", "{}");
+    if (!raw) return false;
+
+    yyjson_doc *doc = yyjson_read(raw, strlen(raw), 0);
+    free(raw);
+    if (!doc) return false;
+
+    yyjson_val *res = yyjson_obj_get(yyjson_doc_get_root(doc), "result");
+    if (!res) {
+        yyjson_doc_free(doc);
+        return false;
+    }
+
+    yyjson_val *perms = yyjson_obj_get(res, "permissions");
+    if (perms) {
+        if (out_acc) *out_acc = yyjson_get_bool(yyjson_obj_get(perms, "accessibility"));
+        if (out_inp) *out_inp = yyjson_get_bool(yyjson_obj_get(perms, "input_monitoring"));
+    }
+    if (out_hook) *out_hook = yyjson_get_bool(yyjson_obj_get(res, "hook_installed"));
+
+    yyjson_doc_free(doc);
+    return true;
+}
+
+static void copy_to_clipboard(const char *text)
+{
+    if (!text || text[0] == '\0') return;
+#ifdef __APPLE__
+    FILE *p = popen("pbcopy", "w");
+    if (p) {
+        fputs(text, p);
+        pclose(p);
+    }
+#endif
+}
+
+static void request_macos_permissions(const char *binary)
 {
 #ifdef __APPLE__
     bool acc = AXIsProcessTrusted();
     bool inp = CGPreflightListenEventAccess();
 
-    if (argc > 0 && (strcmp(argv[0], "request") == 0 || strcmp(argv[0], "prompt") == 0 || strcmp(argv[0], "ask") == 0)) {
-        if (!acc) {
-            const void *keys[] = { kAXTrustedCheckOptionPrompt };
-            const void *values[] = { kCFBooleanTrue };
-            CFDictionaryRef options = CFDictionaryCreate(
-                kCFAllocatorDefault,
-                keys,
-                values,
-                1,
-                &kCFTypeDictionaryKeyCallBacks,
-                &kCFTypeDictionaryValueCallBacks
-            );
-            if (options) {
-                acc = AXIsProcessTrustedWithOptions(options);
-                CFRelease(options);
-            }
-        }
-        if (!inp) {
-            inp = CGRequestListenEventAccess();
-        }
-
-        /* Open System Settings preference panes */
-        (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility\" 2>/dev/null");
-        (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent\" 2>/dev/null");
-
-        /* Reveal the installed binary in Finder for drag & drop */
-        char binary[4096];
-        if (tool_sibling_path(g_program_path, getenv("PATH"), "openlogi", binary, sizeof(binary))) {
-            char cmd[4200];
-            snprintf(cmd, sizeof(cmd), "open -R \"%s\" 2>/dev/null", binary);
-            (void)system(cmd);
-        }
-    } else if (argc > 0 && strcmp(argv[0], "open") == 0) {
-        (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility\" 2>/dev/null");
-        (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent\" 2>/dev/null");
-    } else if (argc > 0 && strcmp(argv[0], "reveal") == 0) {
-        char binary[4096];
-        if (tool_sibling_path(g_program_path, getenv("PATH"), "openlogi", binary, sizeof(binary))) {
-            char cmd[4200];
-            snprintf(cmd, sizeof(cmd), "open -R \"%s\" 2>/dev/null", binary);
-            (void)system(cmd);
+    if (!acc) {
+        const void *keys[] = { kAXTrustedCheckOptionPrompt };
+        const void *values[] = { kCFBooleanTrue };
+        CFDictionaryRef options = CFDictionaryCreate(
+            kCFAllocatorDefault,
+            keys,
+            values,
+            1,
+            &kCFTypeDictionaryKeyCallBacks,
+            &kCFTypeDictionaryValueCallBacks
+        );
+        if (options) {
+            acc = AXIsProcessTrustedWithOptions(options);
+            CFRelease(options);
         }
     }
+    if (!inp) {
+        CGRequestListenEventAccess();
+    }
+
+    (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility\" 2>/dev/null");
+    (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent\" 2>/dev/null");
+
+    if (binary && binary[0]) {
+        copy_to_clipboard(binary);
+        char cmd[4200];
+        snprintf(cmd, sizeof(cmd), "open -R \"%s\" 2>/dev/null", binary);
+        (void)system(cmd);
+    }
+#else
+    (void)binary;
+#endif
+}
+
+static bool wait_for_macos_permissions(ipc_client_t *client, int timeout_seconds)
+{
+#ifdef __APPLE__
+    bool cli_acc = AXIsProcessTrusted();
+    bool cli_inp = CGPreflightListenEventAccess();
+
+    bool daemon_acc = false;
+    bool daemon_inp = false;
+    bool daemon_hook = false;
+    bool daemon_ok = false;
+
+    if (client && client->fd >= 0) {
+        daemon_ok = query_daemon_permissions(client, &daemon_acc, &daemon_inp, &daemon_hook);
+    }
+
+    if ((daemon_ok && daemon_acc && daemon_inp) || (!daemon_ok && cli_acc && cli_inp)) {
+        return true;
+    }
+
+    const char *spinner = "|/-\\";
+    int spin_idx = 0;
+    int waited_ms = 0;
+    int total_ms = timeout_seconds * 1000;
+
+    printf(COLOR_BOLD COLOR_CYAN "[*] Waiting for permission approval in System Settings..." COLOR_RESET "\n");
+    printf("    (Press Ctrl+C to skip)\n\n");
+
+    const char *sock = (g_custom_socket[0] != '\0') ? g_custom_socket : NULL;
+
+    while (waited_ms < total_ms) {
+        cli_acc = AXIsProcessTrusted();
+        cli_inp = CGPreflightListenEventAccess();
+
+        if (client) {
+            if (client->fd < 0) {
+                (void)ipc_client_connect(sock, client);
+            }
+            if (client->fd >= 0) {
+                daemon_ok = query_daemon_permissions(client, &daemon_acc, &daemon_inp, &daemon_hook);
+                if (!daemon_ok) {
+                    /* Daemon might have restarted after permission approval (Quit & Reopen) */
+                    ipc_client_close(client);
+                    if (ipc_client_connect(sock, client)) {
+                        daemon_ok = query_daemon_permissions(client, &daemon_acc, &daemon_inp, &daemon_hook);
+                    }
+                }
+            }
+        }
+
+        bool all_good = daemon_ok ? (daemon_acc && daemon_inp) : (cli_acc && cli_inp);
+
+        if (all_good) {
+            printf("\r\033[K" COLOR_BOLD COLOR_GREEN "[✔] OpenLogi permissions: Accessibility: GRANTED | Input Monitoring: GRANTED" COLOR_RESET "\n\n");
+            return true;
+        }
+
+        bool show_acc = daemon_ok ? daemon_acc : cli_acc;
+        bool show_inp = daemon_ok ? daemon_inp : cli_inp;
+
+        printf("\r\033[K [%c] Accessibility: %s | Input Monitoring: %s  (%ds remaining)",
+               spinner[spin_idx % 4],
+               show_acc ? COLOR_GREEN "GRANTED" COLOR_RESET : COLOR_YELLOW "PENDING" COLOR_RESET,
+               show_inp ? COLOR_GREEN "GRANTED" COLOR_RESET : COLOR_YELLOW "PENDING" COLOR_RESET,
+               (total_ms - waited_ms) / 1000);
+        fflush(stdout);
+
+        spin_idx++;
+        usleep(250000);
+        waited_ms += 250;
+    }
+    printf("\n\n" COLOR_YELLOW "[!] Permission wait timed out. You can grant them in System Settings anytime." COLOR_RESET "\n");
+    return false;
+#else
+    (void)client;
+    (void)timeout_seconds;
+    return true;
+#endif
+}
+
+static void reset_macos_permissions(void)
+{
+#ifdef __APPLE__
+    (void)system("tccutil reset Accessibility io.github.openlogi.agent 2>/dev/null");
+    (void)system("tccutil reset ListenEvent io.github.openlogi.agent 2>/dev/null");
+    (void)system("tccutil reset Accessibility openlogi 2>/dev/null");
+    (void)system("tccutil reset ListenEvent openlogi 2>/dev/null");
+    printf(COLOR_BOLD COLOR_GREEN "[+] Reset TCC permissions for OpenLogi." COLOR_RESET "\n");
+    printf("    macOS security cache cleared. Run 'openlogi doctor' to re-authorize cleanly.\n\n");
+#else
+    printf("[*] Permission reset is only applicable on macOS.\n");
+#endif
+}
+
+static int cmd_permissions(int argc, char **argv)
+{
+#ifdef __APPLE__
+    bool cli_acc = AXIsProcessTrusted();
+    bool cli_inp = CGPreflightListenEventAccess();
+
+    char binary[4096] = { 0 };
+    bool found_bin = tool_sibling_path(g_program_path, getenv("PATH"), "openlogi", binary, sizeof(binary));
+    char app_path[1024] = { 0 };
+    bool has_app = (get_preferred_app_target(app_path, sizeof(app_path)) != NULL);
+    const char *target = has_app ? app_path : (found_bin ? binary : NULL);
+
+    ipc_client_t client;
+    const char *sock = (g_custom_socket[0] != '\0') ? g_custom_socket : NULL;
+    bool has_client = ipc_client_connect(sock, &client);
+    bool daemon_acc = false, daemon_inp = false, daemon_hook = false;
+    bool has_daemon = false;
+    if (has_client) {
+        has_daemon = query_daemon_permissions(&client, &daemon_acc, &daemon_inp, &daemon_hook);
+    }
+
+    if (argc > 0 && strcmp(argv[0], "reset") == 0) {
+        if (has_client) ipc_client_close(&client);
+        reset_macos_permissions();
+        return 0;
+    }
+
+    if (argc > 0 && (strcmp(argv[0], "doctor") == 0 || strcmp(argv[0], "check") == 0)) {
+        if (has_client) ipc_client_close(&client);
+        return cmd_doctor(argc - 1, &argv[1]);
+    }
+
+    if (argc > 0 && (strcmp(argv[0], "request") == 0 || strcmp(argv[0], "prompt") == 0 || strcmp(argv[0], "ask") == 0)) {
+        request_macos_permissions(target);
+
+        if (target) {
+            printf(COLOR_BOLD COLOR_GREEN "📋 Copied path to clipboard:" COLOR_RESET " %s\n", target);
+            if (has_app) {
+                printf("   In System Settings: drag %s from Finder into the list,\n", target);
+                printf("   or click '+' and select OpenLogi from Applications.\n\n");
+            } else {
+                printf("   In System Settings file picker: press " COLOR_BOLD "Cmd+Shift+G" COLOR_RESET " -> press " COLOR_BOLD "Cmd+V" COLOR_RESET " -> Return.\n\n");
+            }
+        }
+        wait_for_macos_permissions(has_client ? &client : NULL, 30);
+        cli_acc = AXIsProcessTrusted();
+        cli_inp = CGPreflightListenEventAccess();
+        if (has_client) {
+            query_daemon_permissions(&client, &daemon_acc, &daemon_inp, &daemon_hook);
+            ipc_client_close(&client);
+        }
+        return 0;
+    } else if (argc > 0 && strcmp(argv[0], "open") == 0) {
+        if (has_client) ipc_client_close(&client);
+        (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility\" 2>/dev/null");
+        (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent\" 2>/dev/null");
+        return 0;
+    } else if (argc > 0 && strcmp(argv[0], "reveal") == 0) {
+        if (has_client) ipc_client_close(&client);
+        if (target) {
+            copy_to_clipboard(target);
+            char cmd[4200];
+            snprintf(cmd, sizeof(cmd), "open -R \"%s\" 2>/dev/null", target);
+            (void)system(cmd);
+            printf(COLOR_BOLD COLOR_GREEN "📋 Copied path to clipboard and revealed in Finder:" COLOR_RESET " %s\n\n", target);
+        }
+        return 0;
+    } else if (argc > 0 && strcmp(argv[0], "wait") == 0) {
+        wait_for_macos_permissions(has_client ? &client : NULL, 60);
+        cli_acc = AXIsProcessTrusted();
+        cli_inp = CGPreflightListenEventAccess();
+        if (has_client) {
+            query_daemon_permissions(&client, &daemon_acc, &daemon_inp, &daemon_hook);
+            ipc_client_close(&client);
+        }
+        return 0;
+    }
+
+    if (has_client) ipc_client_close(&client);
+
+    bool effective_acc = has_daemon ? daemon_acc : cli_acc;
+    bool effective_inp = has_daemon ? daemon_inp : cli_inp;
 
     if (g_json_output) {
-        printf("{\"platform\":\"macos\",\"accessibility\":%s,\"input_monitoring\":%s,\"all_granted\":%s}\n",
-               acc ? "true" : "false", inp ? "true" : "false", (acc && inp) ? "true" : "false");
-        return (acc && inp) ? 0 : 1;
+        printf("{\"platform\":\"macos\",\"daemon_running\":%s,\"accessibility\":%s,\"input_monitoring\":%s,\"cli_accessibility\":%s,\"cli_input_monitoring\":%s,\"all_granted\":%s}\n",
+               has_daemon ? "true" : "false",
+               effective_acc ? "true" : "false",
+               effective_inp ? "true" : "false",
+               cli_acc ? "true" : "false",
+               cli_inp ? "true" : "false",
+               (effective_acc && effective_inp) ? "true" : "false");
+        return (effective_acc && effective_inp) ? 0 : 1;
     }
 
     print_banner();
     printf(COLOR_BOLD "macOS Permissions Status:" COLOR_RESET "\n");
-    printf("  Accessibility:     %s  %s\n",
-           acc ? COLOR_BOLD COLOR_GREEN "GRANTED" COLOR_RESET : COLOR_BOLD COLOR_RED "DENIED" COLOR_RESET,
-           acc ? "(Input event tap & synthetic events active)" : "(Required for mouse buttons, scroll & gesture dispatch)");
-    printf("  Input Monitoring:  %s  %s\n\n",
-           inp ? COLOR_BOLD COLOR_GREEN "GRANTED" COLOR_RESET : COLOR_BOLD COLOR_RED "DENIED" COLOR_RESET,
-           inp ? "(Direct IOKit access active)" : "(Required for Logitech Bluetooth & USB HID++ access)");
 
-    if (!acc || !inp) {
+    if (has_daemon) {
+        printf("  Background Daemon (OpenLogi.app):\n");
+        printf("    Accessibility:     %s  %s\n",
+               daemon_acc ? COLOR_BOLD COLOR_GREEN "GRANTED" COLOR_RESET : COLOR_BOLD COLOR_RED "DENIED" COLOR_RESET,
+               daemon_acc ? "(Active)" : "(Required for mouse buttons, scroll & gesture dispatch)");
+        printf("    Input Monitoring:  %s  %s\n",
+               daemon_inp ? COLOR_BOLD COLOR_GREEN "GRANTED" COLOR_RESET : COLOR_BOLD COLOR_RED "DENIED" COLOR_RESET,
+               daemon_inp ? "(Active)" : "(Required for Logitech Bluetooth & USB HID++ access)");
+        if (cli_acc != daemon_acc || cli_inp != daemon_inp) {
+            printf("  CLI Terminal Context:\n");
+            printf("    Accessibility:     %s\n", cli_acc ? "GRANTED" : "DENIED");
+            printf("    Input Monitoring:  %s\n", cli_inp ? "GRANTED" : "DENIED");
+        }
+        printf("\n");
+    } else {
+        printf("  Accessibility:     %s  %s\n",
+               cli_acc ? COLOR_BOLD COLOR_GREEN "GRANTED" COLOR_RESET : COLOR_BOLD COLOR_RED "DENIED" COLOR_RESET,
+               cli_acc ? "(Active)" : "(Required for mouse buttons, scroll & gesture dispatch)");
+        printf("  Input Monitoring:  %s  %s\n\n",
+               cli_inp ? COLOR_BOLD COLOR_GREEN "GRANTED" COLOR_RESET : COLOR_BOLD COLOR_RED "DENIED" COLOR_RESET,
+               cli_inp ? "(Active)" : "(Required for Logitech Bluetooth & USB HID++ access)");
+    }
+
+    if (!effective_acc || !effective_inp) {
         printf(COLOR_BOLD COLOR_YELLOW "[!] How to enable missing permissions:" COLOR_RESET "\n");
-        printf("  1. Run: " COLOR_BOLD "openlogi permissions request" COLOR_RESET "\n");
-        printf("     This prompts macOS and opens System Settings directly.\n");
+        printf("  1. Run: " COLOR_BOLD "openlogi doctor" COLOR_RESET " (Automated setup & live diagnostic)\n");
+        printf("     Or run: " COLOR_BOLD "openlogi permissions request" COLOR_RESET "\n");
         printf("  2. In " COLOR_BOLD "System Settings -> Privacy & Security" COLOR_RESET ":\n");
-        printf("     • In " COLOR_CYAN "Accessibility" COLOR_RESET ", toggle ON " COLOR_BOLD "openlogi" COLOR_RESET " (or click + to add)\n");
-        printf("     • In " COLOR_CYAN "Input Monitoring" COLOR_RESET ", toggle ON " COLOR_BOLD "openlogi" COLOR_RESET " (or click + to add)\n");
-        printf("  3. If 'openlogi' is not listed, run " COLOR_BOLD "openlogi permissions reveal" COLOR_RESET "\n");
-        printf("     and drag the highlighted 'openlogi' file directly into System Settings.\n");
-        printf("  4. After granting permissions, restart the service:\n");
-        printf("     " COLOR_BOLD "openlogi restart" COLOR_RESET "\n\n");
+        printf("     • In " COLOR_CYAN "Accessibility" COLOR_RESET ", toggle ON " COLOR_BOLD "OpenLogi" COLOR_RESET "\n");
+        printf("     • In " COLOR_CYAN "Input Monitoring" COLOR_RESET ", toggle ON " COLOR_BOLD "OpenLogi" COLOR_RESET "\n");
+        printf("  3. If 'OpenLogi' is already in the list, toggle it " COLOR_BOLD "OFF and back ON" COLOR_RESET ".\n");
+        printf("  4. To reset stuck permissions: " COLOR_BOLD "openlogi permissions reset" COLOR_RESET "\n\n");
         return 1;
     }
 
@@ -1485,6 +1754,301 @@ static int cmd_permissions(int argc, char **argv)
     printf("  Udev / Evdev:      " COLOR_BOLD COLOR_GREEN "GRANTED" COLOR_RESET " (User group permissions active)\n\n");
     return 0;
 #endif
+}
+
+static void doctor_run_click_test(ipc_client_t *client)
+{
+    printf(COLOR_BOLD COLOR_CYAN "[5/5] Live Hardware Click Test:" COLOR_RESET "\n");
+    printf("    Press any button on your Logitech mouse (Gesture button, Thumb wheel, Back)...\n");
+    printf("    (Listening for 6 seconds, or press Ctrl+C to finish)\n\n");
+    fflush(stdout);
+
+    yyjson_doc *sub_doc = ipc_client_call(client, "openlogi.subscribe", "{}");
+    if (!sub_doc) {
+        printf("    [*] Could not subscribe to live event stream; skipping click test.\n");
+        return;
+    }
+    yyjson_doc_free(sub_doc);
+
+    int elapsed_ms = 0;
+    bool detected = false;
+
+    while (elapsed_ms < 6000 && !detected) {
+        yyjson_doc *ev_doc = ipc_client_read_event(client, 100);
+        if (ev_doc) {
+            yyjson_val *root = yyjson_doc_get_root(ev_doc);
+            yyjson_val *params = yyjson_obj_get(root, "params");
+            const char *ev_name = yyjson_get_str(yyjson_obj_get(params, "event"));
+            if (ev_name && (strcmp(ev_name, "gesture_triggered") == 0 ||
+                            strcmp(ev_name, "dpi_changed") == 0 ||
+                            strcmp(ev_name, "smartshift_changed") == 0 ||
+                            strcmp(ev_name, "app_activated") == 0 ||
+                            strcmp(ev_name, "hook_activated") == 0)) {
+                printf(COLOR_BOLD COLOR_GREEN "    [✔] Intercepted event: %s!" COLOR_RESET "\n", ev_name);
+                yyjson_val *data = yyjson_obj_get(params, "data");
+                if (data) {
+                    char *d_str = yyjson_val_write(data, 0, NULL);
+                    if (d_str) {
+                        printf("        Data: %s\n", d_str);
+                        free(d_str);
+                    }
+                }
+                detected = true;
+            }
+            yyjson_doc_free(ev_doc);
+        }
+        elapsed_ms += 100;
+    }
+
+    if (detected) {
+        printf("\n" COLOR_BOLD COLOR_GREEN "    [✔] Live button interception verified! Hardware and event tap are fully active." COLOR_RESET "\n");
+    } else {
+        printf("    [*] No button click detected during 6s window. You can test anytime with: " COLOR_BOLD "openlogi monitor" COLOR_RESET "\n");
+    }
+}
+
+static int cmd_doctor(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+
+    if (!g_json_output) {
+        print_banner();
+        printf(COLOR_BOLD "OpenLogi System Doctor & Diagnostic Wizard" COLOR_RESET "\n");
+        printf("Validating executable environment, permissions, daemon service, and hardware...\n\n");
+    }
+
+    /* 1. Executable Location & Identity */
+    char binary[4096] = { 0 };
+    bool found_bin = tool_sibling_path(g_program_path, getenv("PATH"), "openlogi", binary, sizeof(binary));
+    char app_path[1024] = { 0 };
+    bool has_app = (get_preferred_app_target(app_path, sizeof(app_path)) != NULL);
+
+    if (!g_json_output) {
+        printf(COLOR_BOLD "[1/5] Binary & Environment:" COLOR_RESET "\n");
+        if (found_bin) {
+            printf("    CLI Executable:   " COLOR_CYAN "%s" COLOR_RESET "\n", binary);
+        } else {
+            printf("    CLI Executable:   " COLOR_YELLOW "%s" COLOR_RESET "\n", g_program_path ? g_program_path : "openlogi");
+        }
+        if (has_app) {
+            printf("    macOS App Bundle: " COLOR_CYAN "%s" COLOR_RESET "\n", app_path);
+        }
+    }
+
+    bool cs_valid = false;
+#ifdef __APPLE__
+    const char *sign_target = has_app ? app_path : (found_bin ? binary : NULL);
+    if (sign_target) {
+        char cs_cmd[4200];
+        snprintf(cs_cmd, sizeof(cs_cmd), "codesign -v \"%s\" 2>/dev/null", sign_target);
+        cs_valid = (system(cs_cmd) == 0);
+    }
+    if (!g_json_output) {
+        printf("    Code Signature:   %s\n", cs_valid ? COLOR_GREEN "VALID (Signed)" COLOR_RESET : COLOR_YELLOW "Ad-hoc / Unsigned" COLOR_RESET);
+    }
+#endif
+
+    /* 2. Daemon & Background Service (Connecting early provides true permission state!) */
+    if (!g_json_output) {
+        printf("\n" COLOR_BOLD "[2/5] Background Service & Daemon:" COLOR_RESET "\n");
+    }
+    ipc_client_t client;
+    const char *sock = (g_custom_socket[0] != '\0') ? g_custom_socket : NULL;
+    bool connected = ipc_client_connect(sock, &client);
+
+    if (!connected) {
+        if (!g_json_output) {
+            printf("    [*] Daemon is not running. Starting OpenLogi service...\n");
+        }
+        char *enable_args[] = { (char *)"enable", NULL };
+        cmd_autostart(1, enable_args);
+        /* Poll up to 3 seconds for daemon socket to come online */
+        for (int i = 0; i < 30; i++) {
+            usleep(100000);
+            if (ipc_client_connect(sock, &client)) {
+                connected = true;
+                break;
+            }
+        }
+    }
+
+    uint64_t daemon_pid = 0;
+    bool is_active = false;
+    bool hook_active = false;
+    bool daemon_acc = false;
+    bool daemon_inp = false;
+
+    if (connected) {
+        char *st_raw = ipc_client_call_raw(&client, "openlogi.get_status", "{}");
+        if (st_raw) {
+            yyjson_doc *doc = yyjson_read(st_raw, strlen(st_raw), 0);
+            free(st_raw);
+            if (doc) {
+                yyjson_val *res = yyjson_obj_get(yyjson_doc_get_root(doc), "result");
+                daemon_pid = yyjson_get_uint(yyjson_obj_get(res, "pid"));
+                const char *rstate = yyjson_get_str(yyjson_obj_get(res, "runtime_state"));
+                is_active = rstate && (strcmp(rstate, "active") == 0);
+                hook_active = yyjson_get_bool(yyjson_obj_get(res, "hook_installed"));
+
+                yyjson_val *perms = yyjson_obj_get(res, "permissions");
+                if (perms) {
+                    daemon_acc = yyjson_get_bool(yyjson_obj_get(perms, "accessibility"));
+                    daemon_inp = yyjson_get_bool(yyjson_obj_get(perms, "input_monitoring"));
+                }
+
+                if (!g_json_output) {
+                    printf("    Daemon State:     " COLOR_BOLD COLOR_GREEN "RUNNING" COLOR_RESET " (PID: %llu)\n", (unsigned long long)daemon_pid);
+                    printf("    Runtime Mode:     %s\n", is_active ? COLOR_GREEN "ACTIVE" COLOR_RESET : COLOR_YELLOW "STANDBY (Waiting for device)" COLOR_RESET);
+                    printf("    OS Event Tap:     %s\n", hook_active ? COLOR_GREEN "ACTIVE (Intercepting input)" COLOR_RESET : COLOR_YELLOW "PASSIVE" COLOR_RESET);
+                }
+
+                yyjson_doc_free(doc);
+            }
+        }
+    } else {
+        if (!g_json_output) {
+            fprintf(stderr, COLOR_RED "    [-] Could not connect to OpenLogi daemon. Try running: openlogi service enable\n" COLOR_RESET);
+        }
+        return 1;
+    }
+
+    /* 3. System Permissions */
+    if (!g_json_output) {
+        printf("\n" COLOR_BOLD "[3/5] System Permissions:" COLOR_RESET "\n");
+    }
+#ifdef __APPLE__
+    bool cli_acc = AXIsProcessTrusted();
+    bool cli_inp = CGPreflightListenEventAccess();
+
+    bool acc = connected ? daemon_acc : cli_acc;
+    bool inp = connected ? daemon_inp : cli_inp;
+
+    if (!g_json_output) {
+        printf("    Daemon Accessibility:    %s\n", daemon_acc ? COLOR_BOLD COLOR_GREEN "GRANTED" COLOR_RESET : COLOR_BOLD COLOR_RED "DENIED" COLOR_RESET);
+        printf("    Daemon Input Monitoring: %s\n", daemon_inp ? COLOR_BOLD COLOR_GREEN "GRANTED" COLOR_RESET : COLOR_BOLD COLOR_RED "DENIED" COLOR_RESET);
+        if (cli_acc != daemon_acc || cli_inp != daemon_inp) {
+            printf("    CLI Terminal Context:    Accessibility: %s | Input Monitoring: %s\n",
+                   cli_acc ? "GRANTED" : "DENIED", cli_inp ? "GRANTED" : "DENIED");
+        }
+    }
+
+    if (!acc || !inp) {
+        if (!g_json_output) {
+            const char *target = has_app ? app_path : (found_bin ? binary : NULL);
+
+            printf("\n" COLOR_BOLD COLOR_YELLOW "[!] Missing macOS Permissions Detected" COLOR_RESET "\n");
+            printf("    OpenLogi requires Accessibility to intercept button clicks and\n");
+            printf("    Input Monitoring to communicate with Logitech Bluetooth/USB devices.\n\n");
+
+            if (target) {
+                copy_to_clipboard(target);
+                printf(COLOR_BOLD COLOR_GREEN "    📋 Application path copied to clipboard:" COLOR_RESET " %s\n\n", target);
+            }
+
+            printf("    " COLOR_BOLD "How to authorize in 3 simple steps:" COLOR_RESET "\n");
+            printf("    1. System Settings preference panes will open automatically.\n");
+            if (has_app) {
+                printf("    2. Drag " COLOR_BOLD "%s" COLOR_RESET " from Finder into the list,\n", app_path);
+                printf("       OR click '+' in System Settings and select " COLOR_BOLD "OpenLogi" COLOR_RESET " from Applications.\n");
+            } else {
+                printf("    2. In the file picker (click '+'): press " COLOR_BOLD "Cmd + Shift + G" COLOR_RESET " -> press " COLOR_BOLD "Cmd + V" COLOR_RESET " (Paste) -> Return.\n");
+            }
+            printf("    3. If 'OpenLogi' is already listed, toggle it " COLOR_BOLD "OFF and back ON" COLOR_RESET " to refresh cache.\n");
+            printf("       (If prompted by macOS to quit, click " COLOR_BOLD "\"Quit & Reopen\"" COLOR_RESET ")\n\n");
+
+            request_macos_permissions(target);
+
+            if (!wait_for_macos_permissions(&client, 45)) {
+                printf(COLOR_YELLOW "[*] Finish granting permissions in System Settings, then run 'openlogi doctor' again.\n" COLOR_RESET);
+                ipc_client_close(&client);
+                return 1;
+            }
+            /* Re-query permissions after wait */
+            query_daemon_permissions(&client, &daemon_acc, &daemon_inp, &hook_active);
+            acc = daemon_acc;
+            inp = daemon_inp;
+        }
+    } else {
+        if (!g_json_output) {
+            printf(COLOR_GREEN "    [✔] All macOS permissions are properly configured." COLOR_RESET "\n");
+        }
+    }
+#else
+    bool acc = true;
+    bool inp = true;
+    if (!g_json_output) {
+        printf("    Udev / Evdev:     " COLOR_BOLD COLOR_GREEN "GRANTED" COLOR_RESET "\n");
+    }
+#endif
+
+    /* 4. Connected Hardware */
+    if (!g_json_output) {
+        printf("\n" COLOR_BOLD "[4/5] Connected Logitech Devices:" COLOR_RESET "\n");
+    }
+    char *inv_raw = ipc_client_call_raw(&client, "openlogi.get_inventory", "{}");
+    size_t dev_count = 0;
+    if (inv_raw) {
+        yyjson_doc *doc = yyjson_read(inv_raw, strlen(inv_raw), 0);
+        free(inv_raw);
+        if (doc) {
+            yyjson_val *res = yyjson_obj_get(yyjson_doc_get_root(doc), "result");
+            yyjson_val *devs = res ? yyjson_obj_get(res, "devices") : NULL;
+            dev_count = (devs && yyjson_is_arr(devs)) ? yyjson_arr_size(devs) : 0;
+            if (!g_json_output) {
+                if (dev_count == 0) {
+                    printf(COLOR_YELLOW "    No Logitech HID++ devices currently connected or awake." COLOR_RESET "\n");
+                    printf("    (Move your mouse or reconnect Bluetooth/USB to wake it up)\n");
+                } else {
+                    for (size_t i = 0; i < dev_count; i++) {
+                        yyjson_val *d = yyjson_arr_get(devs, i);
+                        const char *name = yyjson_get_str(yyjson_obj_get(d, "product_name"));
+                        uint64_t bat = yyjson_get_uint(yyjson_obj_get(d, "battery_percent"));
+                        bool chg = yyjson_get_bool(yyjson_obj_get(d, "is_charging"));
+                        uint64_t dpi = yyjson_get_uint(yyjson_obj_get(d, "dpi"));
+                        bool online = yyjson_get_bool(yyjson_obj_get(d, "online"));
+
+                        printf("    • " COLOR_BOLD "%s" COLOR_RESET " (%s) - Battery: %llu%%%s, DPI: %llu\n",
+                               name ? name : "Logitech Device",
+                               online ? COLOR_GREEN "Online" COLOR_RESET : COLOR_YELLOW "Offline" COLOR_RESET,
+                               (unsigned long long)bat,
+                               chg ? " [Charging]" : "",
+                               (unsigned long long)dpi);
+                    }
+                }
+            }
+            yyjson_doc_free(doc);
+        }
+    }
+
+    /* 5. Live Interactive Click Test */
+    if (!g_json_output) {
+        printf("\n");
+        if (dev_count > 0 && is_active) {
+            doctor_run_click_test(&client);
+        } else {
+            printf(COLOR_BOLD "[5/5] Live Hardware Click Test:" COLOR_RESET "\n");
+            printf("    Skipping click test until a Logitech mouse is connected and awake.\n");
+        }
+    }
+
+    ipc_client_close(&client);
+
+    if (g_json_output) {
+        printf("{\"doctor\":true,\"binary\":\"%s\",\"codesign\":%s,\"accessibility\":%s,\"input_monitoring\":%s,\"daemon_pid\":%llu,\"devices_count\":%zu}\n",
+               found_bin ? binary : "unknown",
+               cs_valid ? "true" : "false",
+               acc ? "true" : "false",
+               inp ? "true" : "false",
+               (unsigned long long)daemon_pid,
+               dev_count);
+        return (acc && inp && connected) ? 0 : 1;
+    }
+
+    printf("\n" COLOR_BOLD COLOR_GREEN "=====================================================" COLOR_RESET "\n");
+    printf(COLOR_BOLD COLOR_GREEN " OpenLogi Doctor check completed successfully!" COLOR_RESET "\n");
+    printf(COLOR_BOLD COLOR_GREEN "=====================================================" COLOR_RESET "\n\n");
+    return 0;
 }
 
 /* Wait for hardware teardown by observing the daemon's lifetime lock. */
@@ -1692,11 +2256,12 @@ static void print_usage(const char *progname)
     printf("OpenLogi Pure C Control Tool (openlogictl) v%s\n", OPENLOGI_AGENT_VERSION);
     printf("Usage: %s [options] <command> [arguments]\n\n", progname);
     printf("Commands:\n");
+    printf("  doctor                         Run automated permission, daemon, and hardware diagnostic\n");
     printf("  uninstall [--dry-run]          Remove this installation; keep configuration\n");
     printf("  status                         Show daemon health, permissions, and active app\n");
     printf("  stop                           Stop running background daemon or service\n");
     printf("  restart                        Restart running background daemon or service\n");
-    printf("  permissions [request|open|reveal] Inspect or configure macOS permissions\n");
+    printf("  permissions [request|reveal|reset] Inspect or configure macOS permissions\n");
     printf("  list, devices, inventory       List connected devices and properties\n");
     printf("  scroll [get|invert|res|smooth] Inspect or configure mouse scroll & wheel settings\n");
     printf("  dpi get                        Get current sensor DPI\n");
@@ -1711,9 +2276,11 @@ static void print_usage(const char *progname)
     printf("  setup                          Launch interactive ANSI terminal setup wizard\n");
     printf("  autostart, service [status|enable|disable|start|restart|stop] Configure automatic login autostart\n\n");
     printf("Examples:\n");
+    printf("  %s doctor                      # Run full automated setup, permissions & hardware check\n", progname);
     printf("  %s scroll invert toggle         # Invert/un-invert mouse wheel scroll direction\n", progname);
     printf("  %s scroll resolution high      # Enable fine-grained hi-res scrolling\n", progname);
     printf("  %s permissions request         # Prompt macOS to grant Accessibility & Input Monitoring\n", progname);
+    printf("  %s permissions reset           # Clear macOS TCC cache if permissions are corrupted\n", progname);
     printf("  %s actions                     # View all 53 available actions with descriptions\n", progname);
     printf("  %s options                     # View full TOML configuration options guide\n", progname);
     printf("  %s config set dpi 1600         # Update DPI setting in config.toml\n\n", progname);
@@ -1756,7 +2323,9 @@ int ctl_main(int argc, char **argv)
     int sub_argc = argc - optind - 1;
     char **sub_argv = &argv[optind + 1];
 
-    if (strcmp(cmd, "uninstall") == 0) {
+    if (strcmp(cmd, "doctor") == 0 || strcmp(cmd, "check") == 0) {
+        return cmd_doctor(sub_argc, sub_argv);
+    } else if (strcmp(cmd, "uninstall") == 0) {
         return cmd_uninstall(sub_argc, sub_argv);
     } else if (strcmp(cmd, "stop") == 0) {
         return cmd_stop();
