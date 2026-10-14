@@ -25,6 +25,7 @@ struct hid_device {
 
 #ifdef __APPLE__
     IOHIDDeviceRef io_device;
+    uint64_t registry_entry_id;
 #endif
 
     uint8_t input_buffer[HIDPP_VERY_LONG_LEN];

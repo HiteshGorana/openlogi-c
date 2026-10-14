@@ -10,6 +10,7 @@
 
 #include <IOKit/hid/IOHIDManager.h>
 #include <IOKit/hid/IOHIDKeys.h>
+#include <IOKit/IOKitLib.h>
 #include <CoreFoundation/CoreFoundation.h>
 
 #include <stdlib.h>
@@ -26,7 +27,9 @@ static const struct {
     uint16_t usage;
     bool long_only;
 } G_COLLECTIONS[] = {
-    { 0xFF00, 0x0002, false },  /* USB, Bolt, Unifying, BT-classic */
+    { 0xFF00, 0x0001, false },  /* HID++ 1.0 (Cordless, Unifying) */
+    { 0xFF00, 0x0002, false },  /* HID++ 2.0 (USB, Bolt, Unifying, Lightspeed, BT) */
+    { 0xFF00, 0x0004, false },  /* HID++ 2.0 Very Long */
     { 0xFF43, 0x0202, true  },  /* Bluetooth Low Energy direct */
     { 0xFF43, 0x0602, false }   /* Wired G-series gaming keyboards */
 };
@@ -58,6 +61,19 @@ static long get_int_property(IOHIDDeviceRef dev, CFStringRef prop_key)
     long val = 0;
     CFNumberGetValue((CFNumberRef)ref, kCFNumberLongType, &val);
     return val;
+}
+
+/* Helper to get 64-bit kernel registry entry ID for IOHIDDeviceRef */
+static uint64_t get_device_registry_id(IOHIDDeviceRef dev_ref)
+{
+    if (!dev_ref) return 0;
+    io_service_t service = IOHIDDeviceGetService(dev_ref);
+    if (!service) return 0;
+    uint64_t reg_id = 0;
+    if (IORegistryEntryGetRegistryEntryID(service, &reg_id) == KERN_SUCCESS) {
+        return reg_id;
+    }
+    return 0;
 }
 
 static void on_input_report(
@@ -135,10 +151,47 @@ static void populate_device_info(IOHIDDeviceRef dev_ref, hid_device_info_t *out_
     long usage = get_int_property(dev_ref, CFSTR(kIOHIDPrimaryUsageKey));
     if (usage == 0) usage = get_int_property(dev_ref, CFSTR(kIOHIDDeviceUsageKey));
 
-    /* If primary usage properties returned 0, inspect DeviceUsagePairs array */
-    if (page == 0 || usage == 0) {
-        CFTypeRef pairs = IOHIDDeviceGetProperty(dev_ref, CFSTR(kIOHIDDeviceUsagePairsKey));
-        if (pairs && CFGetTypeID(pairs) == CFArrayGetTypeID() && CFArrayGetCount((CFArrayRef)pairs) > 0) {
+    /* Check if current primary/device usage matches any known HID++ collection */
+    bool matched = false;
+    for (size_t i = 0; i < NUM_COLLECTIONS; i++) {
+        if (G_COLLECTIONS[i].page == (uint16_t)page &&
+            G_COLLECTIONS[i].usage == (uint16_t)usage) {
+            matched = true;
+            out_info->is_long_only = G_COLLECTIONS[i].long_only;
+            break;
+        }
+    }
+
+    /* If not matched directly (e.g. on macOS BLE where PrimaryUsage is generic 0x0001/0x0006),
+     * inspect DeviceUsagePairs array to find the HID++ vendor collection pair */
+    CFTypeRef pairs = IOHIDDeviceGetProperty(dev_ref, CFSTR(kIOHIDDeviceUsagePairsKey));
+    if (pairs && CFGetTypeID(pairs) == CFArrayGetTypeID()) {
+        CFIndex pair_count = CFArrayGetCount((CFArrayRef)pairs);
+        for (CFIndex p = 0; p < pair_count; p++) {
+            CFDictionaryRef pair_dict = (CFDictionaryRef)CFArrayGetValueAtIndex((CFArrayRef)pairs, p);
+            if (!pair_dict || CFGetTypeID(pair_dict) != CFDictionaryGetTypeID()) continue;
+
+            CFNumberRef p_ref = (CFNumberRef)CFDictionaryGetValue(pair_dict, CFSTR(kIOHIDDeviceUsagePageKey));
+            CFNumberRef u_ref = (CFNumberRef)CFDictionaryGetValue(pair_dict, CFSTR(kIOHIDDeviceUsageKey));
+            long pair_page = 0, pair_usage = 0;
+            if (p_ref) CFNumberGetValue(p_ref, kCFNumberLongType, &pair_page);
+            if (u_ref) CFNumberGetValue(u_ref, kCFNumberLongType, &pair_usage);
+
+            for (size_t i = 0; i < NUM_COLLECTIONS; i++) {
+                if (G_COLLECTIONS[i].page == (uint16_t)pair_page &&
+                    G_COLLECTIONS[i].usage == (uint16_t)pair_usage) {
+                    page = pair_page;
+                    usage = pair_usage;
+                    out_info->is_long_only = G_COLLECTIONS[i].long_only;
+                    matched = true;
+                    break;
+                }
+            }
+            if (matched) break;
+        }
+
+        /* Fallback if still 0 */
+        if (page == 0 && usage == 0 && pair_count > 0) {
             CFDictionaryRef first = (CFDictionaryRef)CFArrayGetValueAtIndex((CFArrayRef)pairs, 0);
             if (first && CFGetTypeID(first) == CFDictionaryGetTypeID()) {
                 CFNumberRef p_ref = (CFNumberRef)CFDictionaryGetValue(first, CFSTR(kIOHIDDeviceUsagePageKey));
@@ -151,15 +204,6 @@ static void populate_device_info(IOHIDDeviceRef dev_ref, hid_device_info_t *out_
 
     out_info->usage_page = (uint16_t)page;
     out_info->usage = (uint16_t)usage;
-
-    /* Check matching collections */
-    for (size_t i = 0; i < NUM_COLLECTIONS; i++) {
-        if (G_COLLECTIONS[i].page == out_info->usage_page &&
-            G_COLLECTIONS[i].usage == out_info->usage) {
-            out_info->is_long_only = G_COLLECTIONS[i].long_only;
-            break;
-        }
-    }
 
     /* On macOS, Bluetooth devices (PID 0xBxxx) are always long-only over HID++ */
     if ((out_info->product_id & 0xF000) == 0xB000 || out_info->usage_page == 0xFF43) {
@@ -183,9 +227,15 @@ static void on_device_matching(void *context, IOReturn result, void *sender, IOH
 
     if (g_device_count >= MAX_CACHED_DEVICES) return;
 
-    /* Check if already present */
+    uint64_t reg_id = get_device_registry_id(dev_ref);
+
+    /* Check if already present by pointer or kernel registry ID */
     for (size_t i = 0; i < g_device_count; i++) {
-        if (g_devices[i] && g_devices[i]->io_device == dev_ref) {
+        if (!g_devices[i]) continue;
+        if (g_devices[i]->io_device == dev_ref) {
+            return;
+        }
+        if (reg_id != 0 && g_devices[i]->registry_entry_id == reg_id) {
             return;
         }
     }
@@ -198,6 +248,7 @@ static void on_device_matching(void *context, IOReturn result, void *sender, IOH
 
     dev->backend_type = HID_BACKEND_IOKIT;
     dev->io_device = dev_ref;
+    dev->registry_entry_id = reg_id;
     populate_device_info(dev_ref, &dev->info);
 
     /* Formally associate device with RunLoop for asynchronous report delivery */
@@ -224,15 +275,18 @@ static void on_device_removal(void *context, IOReturn result, void *sender, IOHI
     (void)result;
     (void)sender;
 
+    uint64_t reg_id = get_device_registry_id(dev_ref);
+
     for (size_t i = 0; i < g_device_count; i++) {
-        if (g_devices[i] && g_devices[i]->io_device == dev_ref) {
+        if (g_devices[i] && (g_devices[i]->io_device == dev_ref ||
+            (reg_id != 0 && g_devices[i]->registry_entry_id == reg_id))) {
             hid_device_t *dev = g_devices[i];
             if (g_hotplug_cb) {
                 g_hotplug_cb(&dev->info, false, g_hotplug_user_data);
             }
 
-            IOHIDDeviceRegisterInputReportCallback(dev_ref, dev->input_buffer, sizeof(dev->input_buffer), NULL, NULL);
-            IOHIDDeviceUnscheduleFromRunLoop(dev_ref, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
+            IOHIDDeviceRegisterInputReportCallback(dev->io_device, dev->input_buffer, sizeof(dev->input_buffer), NULL, NULL);
+            IOHIDDeviceUnscheduleFromRunLoop(dev->io_device, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
 
             /* Shift remaining devices */
             for (size_t j = i; j + 1 < g_device_count; j++) {
@@ -253,7 +307,7 @@ static CFMutableArrayRef create_matching_array(void)
     int vendor_id = LOGITECH_VENDOR_ID;
     CFNumberRef cf_vid = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &vendor_id);
 
-    /* 1. Add specific collection matches for DeviceUsagePage / DeviceUsage */
+    /* Add specific collection matches for DeviceUsagePage / DeviceUsage */
     for (size_t i = 0; i < NUM_COLLECTIONS; i++) {
         CFMutableDictionaryRef dict = CFDictionaryCreateMutable(kCFAllocatorDefault, 3,
                                                                 &kCFTypeDictionaryKeyCallBacks,
@@ -285,16 +339,6 @@ static CFMutableArrayRef create_matching_array(void)
 
         CFRelease(cf_page);
         CFRelease(cf_usage);
-    }
-
-    /* 2. Generic Logitech VID match */
-    CFMutableDictionaryRef vid_only = CFDictionaryCreateMutable(kCFAllocatorDefault, 1,
-                                                                &kCFTypeDictionaryKeyCallBacks,
-                                                                &kCFTypeDictionaryValueCallBacks);
-    if (vid_only) {
-        CFDictionarySetValue(vid_only, CFSTR(kIOHIDVendorIDKey), cf_vid);
-        CFArrayAppendValue(array, vid_only);
-        CFRelease(vid_only);
     }
 
     CFRelease(cf_vid);

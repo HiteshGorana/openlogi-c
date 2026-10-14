@@ -54,6 +54,21 @@ int main(void)
         printf("    Serial Number:  %s\n", info->serial_number[0] ? info->serial_number : "(none)");
         printf("    Transport Path: %s\n", info->transport_path);
 
+        /* Check if device with this serial number was already probed as a primary node */
+        if (info->serial_number[0] != '\0') {
+            bool already = false;
+            for (int prev = 0; prev < i; prev++) {
+                if (strcmp(devices[prev].serial_number, info->serial_number) == 0) {
+                    already = true;
+                    break;
+                }
+            }
+            if (already) {
+                printf("    [i] Secondary interface collection for serial %s (already probed above).\n", info->serial_number);
+                continue;
+            }
+        }
+
         hid_device_t *dev = hid_open(info->transport_path);
         if (!dev) {
             printf("    [!] Could not open device endpoint for HID++ probing.\n");
