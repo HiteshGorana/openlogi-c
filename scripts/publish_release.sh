@@ -50,7 +50,8 @@ if [ "$state" = missing ]; then
 fi
 
 # Retrying an interrupted upload replaces assets only while the release is a draft.
+dmgs=$(find dist -name "*.dmg" 2>/dev/null || true)
 gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber \
     dist/openlogi-macos-arm64.tar.gz dist/openlogi-macos-x86_64.tar.gz \
-    dist/SHA256SUMS install.sh
+    dist/SHA256SUMS install.sh $dmgs
 gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false
