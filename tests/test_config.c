@@ -294,6 +294,9 @@ static void test_app_watcher(void)
     /* App watcher fires immediately with current app */
     assert(wait_for_callback(&g_app_cb_fired) && "app_watch callback should fire with initial app");
 
+    /* Test tick execution */
+    app_watch_tick();
+
     app_watch_stop();
     assert(!app_watch_is_running());
 

@@ -86,7 +86,13 @@ bool action_queue_init(void)
 
     g_running = true;
     g_busy = false;
-    if (pthread_create(&g_worker_thread, NULL, action_worker_main, NULL) != 0) {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 2 * 1024 * 1024);
+    int thread_rc = pthread_create(&g_worker_thread, &attr, action_worker_main, NULL);
+    pthread_attr_destroy(&attr);
+
+    if (thread_rc != 0) {
         g_running = false;
         pthread_mutex_unlock(&g_lock);
         return false;

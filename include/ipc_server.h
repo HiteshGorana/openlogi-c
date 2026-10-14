@@ -82,6 +82,24 @@ bool ipc_server_is_running(void);
  */
 void ipc_server_broadcast_event(const char *event_name, const char *json_payload);
 
+typedef void (*ipc_file_watch_cb_t)(const char *path, void *user_data);
+
+/**
+ * @brief Register a configuration file to watch on the IPC server's kqueue event loop.
+ * Multiplexes socket I/O and file modification events into a single thread,
+ * eliminating a separate file-watcher thread.
+ * @param filepath Path to file to monitor.
+ * @param callback Callback to invoke on change.
+ * @param user_data Context passed to callback.
+ * @return true on success, false if IPC server is not running or error.
+ */
+bool ipc_server_watch_file(const char *filepath, ipc_file_watch_cb_t callback, void *user_data);
+
+/**
+ * @brief Unregister configuration file watcher from the IPC server event loop.
+ */
+void ipc_server_unwatch_file(void);
+
 /**
  * @brief In-memory dispatch of a JSON-RPC 2.0 request string.
  * @param ctx Daemon context.

@@ -372,6 +372,59 @@ static void test_ipc_client_large_payload(void)
     TEST_PASS("test_ipc_client_large_payload");
 }
 
+static volatile bool g_file_watch_fired = false;
+static void on_test_file_changed(const char *filepath, void *user_data)
+{
+    (void)filepath;
+    (void)user_data;
+    g_file_watch_fired = true;
+}
+
+static void test_ipc_server_file_watch(void)
+{
+    openlogi_daemon_ctx_t ctx;
+    setup_mock_ctx(&ctx);
+
+    const char *test_sock = "/tmp/test_openlogi_ipc_watch.sock";
+    const char *test_file = "/tmp/test_openlogi_watch_target.txt";
+    unlink(test_sock);
+    unlink(test_file);
+
+    /* Create initial file */
+    FILE *fp = fopen(test_file, "w");
+    assert(fp != NULL);
+    fputs("initial content\n", fp);
+    fclose(fp);
+
+    bool started = ipc_server_start(test_sock, &ctx);
+    assert(started);
+
+    g_file_watch_fired = false;
+    bool watched = ipc_server_watch_file(test_file, on_test_file_changed, NULL);
+    assert(watched);
+
+    /* Modify file */
+    usleep(10000);
+    fp = fopen(test_file, "a");
+    assert(fp != NULL);
+    fputs("appended content\n", fp);
+    fclose(fp);
+
+    /* Wait for event + debounce settle timer (~50ms) */
+    for (int i = 0; i < 50; i++) {
+        if (g_file_watch_fired) break;
+        usleep(10000);
+    }
+    assert(g_file_watch_fired && "ipc_server file watcher should trigger on file change");
+
+    ipc_server_unwatch_file();
+    ipc_server_stop();
+    unlink(test_sock);
+    unlink(test_file);
+
+    TEST_PASS("test_ipc_server_file_watch");
+}
+
 int main(void)
 {
     test_suite_begin(&g_suite, "test_ipc_server", "JSON-RPC 2.0 UNIX Domain Socket Server");
@@ -382,6 +435,7 @@ int main(void)
     TEST_CASE_RUN(g_suite, test_jsonrpc_dispatch_errors);
     TEST_CASE_RUN(g_suite, test_socket_server_end_to_end);
     TEST_CASE_RUN(g_suite, test_ipc_client_large_payload);
+    TEST_CASE_RUN(g_suite, test_ipc_server_file_watch);
 
     test_suite_end(&g_suite);
     return (g_suite.failed == 0) ? 0 : 1;

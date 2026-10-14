@@ -50,22 +50,16 @@ static uint64_t daemon_get_time_ms(void)
     return (uint64_t)tv.tv_sec * 1000 + (uint64_t)tv.tv_usec / 1000;
 }
 
+static bool daemon_reload_config(openlogi_daemon_ctx_t *ctx);
+
 static void on_config_reloaded(const char *filepath, void *user_data)
 {
     (void)user_data;
     printf("[openlogid] Configuration file modified (%s). Hot-reloading...\n", filepath);
-    char err[256];
-    openlogi_config_t new_cfg;
-    memset(&new_cfg, 0, sizeof(new_cfg));
-    if (config_load_file(filepath, &new_cfg, err, sizeof(err))) {
-        button_runtime_cancel_all(&g_button_rt, BUTTON_END_CANCELED_INVALIDATED);
-        config_free(&g_daemon_ctx.config);
-        g_daemon_ctx.config = new_cfg;
+    if (daemon_reload_config(&g_daemon_ctx)) {
         printf("[openlogid] Configuration reloaded successfully (schema version %u).\n",
                g_daemon_ctx.config.schema_version);
         ipc_server_broadcast_event("config_reloaded", "{\"success\":true}");
-    } else {
-        fprintf(stderr, "[openlogid] Failed to reload config: %s\n", err);
     }
 }
 
@@ -735,15 +729,20 @@ static bool daemon_set_smartshift(openlogi_daemon_ctx_t *ctx, const char *dev_ke
 static bool daemon_reload_config(openlogi_daemon_ctx_t *ctx)
 {
     char err[256];
-    openlogi_config_t new_cfg;
-    memset(&new_cfg, 0, sizeof(new_cfg));
-    if (!config_load_file(g_config_file, &new_cfg, err, sizeof(err))) {
+    openlogi_config_t *new_cfg = calloc(1, sizeof(openlogi_config_t));
+    if (!new_cfg) {
+        fprintf(stderr, "[openlogid] Out of memory reloading config\n");
+        return false;
+    }
+    if (!config_load_file(g_config_file, new_cfg, err, sizeof(err))) {
         fprintf(stderr, "[openlogid] Failed to reload config: %s\n", err);
+        free(new_cfg);
         return false;
     }
     button_runtime_cancel_all(&g_button_rt, BUTTON_END_CANCELED_INVALIDATED);
     config_free(&ctx->config);
-    ctx->config = new_cfg;
+    ctx->config = *new_cfg;
+    free(new_cfg);
     return true;
 }
 
@@ -858,33 +857,34 @@ int daemon_main(int argc, char **argv)
         printf("[openlogid] No existing configuration found or parse error (%s); using defaults.\n", cfg_err);
     }
 
-    /* 5. Start Config Watcher */
+    /* 5. Start IPC Server */
+    if (!ipc_server_start(g_socket_file, &g_daemon_ctx)) {
+        fprintf(stderr, "[openlogid] Failed to start IPC socket server at %s\n", g_socket_file);
+        return 1;
+    }
+    printf("[openlogid] JSON-RPC 2.0 IPC server listening at %s\n", g_socket_file);
+
+    /* 6. Start Config Watcher (shares IPC server event loop) */
     if (config_watch_start(g_config_file, on_config_reloaded, NULL)) {
         printf("[openlogid] Config file hot-reload watcher active.\n");
     }
 
-    /* 6. Start Foreground App Watcher */
+    /* 7. Start Foreground App Watcher */
     if (app_watch_start(on_app_changed, NULL)) {
         printf("[openlogid] Foreground application profile watcher active.\n");
     }
 
-    /* 7. Start OS Event Tap Hook */
+    /* 8. Start OS Event Tap Hook */
     if (hook_init(on_hook_event, NULL) && hook_start()) {
         printf("[openlogid] OS input interception hook installed.\n");
     } else {
         printf("[openlogid] Notice: Accessibility permission not yet granted; hook in passive mode.\n");
     }
 
-    /* 8. Start Background Hotplug Monitor & Probe Connected Hardware */
+    /* 9. Start Background Hotplug Monitor & Probe Connected Hardware */
     hid_start_hotplug_monitor(on_hotplug_event, &g_daemon_ctx);
     daemon_probe_hardware(&g_daemon_ctx);
 
-    /* 9. Start IPC Server */
-    if (!ipc_server_start(g_socket_file, &g_daemon_ctx)) {
-        fprintf(stderr, "[openlogid] Failed to start IPC socket server at %s\n", g_socket_file);
-        return 1;
-    }
-    printf("[openlogid] JSON-RPC 2.0 IPC server listening at %s\n", g_socket_file);
     printf("[openlogid] Daemon initialized successfully. Ready for clients.\n");
 
     /* Main Daemon Loop */
@@ -899,6 +899,11 @@ int daemon_main(int argc, char **argv)
         button_runtime_tick(&g_button_rt, now_ms);
 
         loop_tick++;
+        /* Check foreground application profile every 2 ticks (~100ms @ 50ms tick) */
+        if (loop_tick % 2 == 0) {
+            app_watch_tick();
+        }
+
         /* Periodically re-scan hardware if no devices were online at launch (every ~2 seconds = 40 ticks @ 50ms) */
         if (g_daemon_ctx.device_count == 0 && (loop_tick % 40 == 0)) {
             daemon_probe_hardware(&g_daemon_ctx);
@@ -908,10 +913,10 @@ int daemon_main(int argc, char **argv)
     printf("\n[openlogid] Termination signal received. Performing graceful shutdown...\n");
 
     /* Clean Shutdown */
+    config_watch_stop();
     ipc_server_stop();
     hook_stop();
     app_watch_stop();
-    config_watch_stop();
     action_queue_shutdown();
     hidpp_diversion_teardown_all();
     hid_stop_hotplug_monitor();

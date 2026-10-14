@@ -21,7 +21,7 @@ extern void objc_autoreleasePoolPop(void *context);
 typedef id (*ObjMsgSend0)(id, SEL);
 typedef const char *(*StrMsgSend0)(id, SEL);
 
-static pthread_t g_watch_thread;
+static char g_last_app[256] = { 0 };
 static volatile bool g_is_running = false;
 static app_watch_cb_t g_callback = NULL;
 static void *g_user_data = NULL;
@@ -100,45 +100,32 @@ bool app_watch_get_frontmost(char *out_app_id, size_t max_len)
     return found;
 }
 
-static void *app_watch_thread_main(void *arg)
+void app_watch_tick(void)
 {
-    (void)arg;
-    char last_app[256] = { 0 };
+    pthread_mutex_lock(&g_lock);
+    if (!g_is_running || !g_callback) {
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
+    app_watch_cb_t cb = g_callback;
+    void *ud = g_user_data;
+    pthread_mutex_unlock(&g_lock);
 
-    /* Initial query */
-    if (app_watch_get_frontmost(last_app, sizeof(last_app))) {
+    char current_app[256] = { 0 };
+    if (app_watch_get_frontmost(current_app, sizeof(current_app))) {
+        bool changed = false;
         pthread_mutex_lock(&g_lock);
-        app_watch_cb_t cb = g_callback;
-        void *ud = g_user_data;
+        if (strcmp(current_app, g_last_app) != 0) {
+            strncpy(g_last_app, current_app, sizeof(g_last_app) - 1);
+            g_last_app[sizeof(g_last_app) - 1] = '\0';
+            changed = true;
+        }
         pthread_mutex_unlock(&g_lock);
 
-        if (cb) {
-            cb(last_app, ud);
+        if (changed && cb) {
+            cb(current_app, ud);
         }
     }
-
-    while (g_is_running) {
-        usleep(100000); /* 100ms poll interval */
-        if (!g_is_running) break;
-
-        char current_app[256] = { 0 };
-        if (app_watch_get_frontmost(current_app, sizeof(current_app))) {
-            if (strcmp(current_app, last_app) != 0) {
-                strncpy(last_app, current_app, sizeof(last_app) - 1);
-
-                pthread_mutex_lock(&g_lock);
-                app_watch_cb_t cb = g_callback;
-                void *ud = g_user_data;
-                pthread_mutex_unlock(&g_lock);
-
-                if (cb) {
-                    cb(current_app, ud);
-                }
-            }
-        }
-    }
-
-    return NULL;
 }
 
 bool app_watch_start(app_watch_cb_t callback, void *user_data)
@@ -154,11 +141,18 @@ bool app_watch_start(app_watch_cb_t callback, void *user_data)
     g_callback = callback;
     g_user_data = user_data;
     g_is_running = true;
+    memset(g_last_app, 0, sizeof(g_last_app));
 
-    if (pthread_create(&g_watch_thread, NULL, app_watch_thread_main, NULL) != 0) {
-        g_is_running = false;
+    /* Initial query and immediate notification */
+    if (app_watch_get_frontmost(g_last_app, sizeof(g_last_app))) {
+        app_watch_cb_t cb = g_callback;
+        void *ud = g_user_data;
         pthread_mutex_unlock(&g_lock);
-        return false;
+
+        if (cb) {
+            cb(g_last_app, ud);
+        }
+        return true;
     }
 
     pthread_mutex_unlock(&g_lock);
@@ -168,14 +162,11 @@ bool app_watch_start(app_watch_cb_t callback, void *user_data)
 void app_watch_stop(void)
 {
     pthread_mutex_lock(&g_lock);
-    if (!g_is_running) {
-        pthread_mutex_unlock(&g_lock);
-        return;
-    }
     g_is_running = false;
+    g_callback = NULL;
+    g_user_data = NULL;
+    g_last_app[0] = '\0';
     pthread_mutex_unlock(&g_lock);
-
-    pthread_join(g_watch_thread, NULL);
 }
 
 bool app_watch_is_running(void)
@@ -193,6 +184,7 @@ bool app_watch_get_frontmost(char *out_app_id, size_t max_len) {
 bool app_watch_start(app_watch_cb_t callback, void *user_data) {
     (void)callback; (void)user_data; return false;
 }
+void app_watch_tick(void) {}
 void app_watch_stop(void) {}
 bool app_watch_is_running(void) { return false; }
 

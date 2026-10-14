@@ -26,12 +26,19 @@ bool app_watch_get_frontmost(char *out_app_id, size_t max_len);
 
 /**
  * @brief Start monitoring frontmost application changes.
- * Calls callback on a background thread whenever frontmost app changes.
+ * Initializes foreground application tracking and invokes callback with initial app.
  * @param callback Callback to invoke on change.
  * @param user_data User data passed to callback.
  * @return true on success, false on error.
  */
 bool app_watch_start(app_watch_cb_t callback, void *user_data);
+
+/**
+ * @brief Periodically check if frontmost application has changed.
+ * Should be called from the daemon's main event loop (e.g. every 100ms).
+ * Invokes the registered callback if the frontmost app changed.
+ */
+void app_watch_tick(void);
 
 /**
  * @brief Stop monitoring application changes.

@@ -25,6 +25,13 @@
 extern Boolean AXIsProcessTrusted(void);
 #endif
 
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__)
+#include <sys/event.h>
+#define OPENLOGI_USE_KQUEUE 1
+#endif
+
+#define TIMER_CONFIG_SETTLE 9999
+
 typedef struct {
     int fd;
     bool subscribed;
@@ -38,6 +45,15 @@ static int g_listen_fd = -1;
 static int g_stop_pipe[2] = { -1, -1 };
 static char g_socket_path[512] = { 0 };
 static openlogi_daemon_ctx_t *g_ctx = NULL;
+
+#ifdef OPENLOGI_USE_KQUEUE
+static int g_kq = -1;
+static int g_config_fd = -1;
+static char g_watch_path[512] = { 0 };
+static ipc_file_watch_cb_t g_config_cb = NULL;
+static void *g_config_ud = NULL;
+static pthread_mutex_t g_watch_lock = PTHREAD_MUTEX_INITIALIZER;
+#endif
 
 static ipc_client_slot_t g_clients[OPENLOGI_MAX_CLIENTS];
 static pthread_mutex_t g_clients_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -395,6 +411,204 @@ static void *ipc_server_thread_main(void *arg)
 {
     (void)arg;
 
+#ifdef OPENLOGI_USE_KQUEUE
+    struct kevent init_evs[2];
+    EV_SET(&init_evs[0], g_stop_pipe[0], EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, NULL);
+    EV_SET(&init_evs[1], g_listen_fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, NULL);
+    kevent(g_kq, init_evs, 2, NULL, 0, NULL);
+
+    while (g_is_running) {
+        struct kevent events[16];
+        int nev = kevent(g_kq, NULL, 0, events, 16, NULL);
+        if (!g_is_running) break;
+        if (nev <= 0) continue;
+
+        for (int i = 0; i < nev; i++) {
+            uintptr_t ident = events[i].ident;
+            int16_t filter  = events[i].filter;
+            uint32_t fflags = events[i].fflags;
+
+            /* 1. Stop signal */
+            if (ident == (uintptr_t)g_stop_pipe[0]) {
+                return NULL;
+            }
+
+            /* 2. New incoming connection */
+            if (ident == (uintptr_t)g_listen_fd) {
+                int client_fd = accept(g_listen_fd, NULL, NULL);
+                if (client_fd >= 0) {
+                    fcntl(client_fd, F_SETFL, O_NONBLOCK);
+#ifdef SO_NOSIGPIPE
+                    int nosigpipe = 1;
+                    setsockopt(client_fd, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof(nosigpipe));
+#endif
+                    pthread_mutex_lock(&g_clients_lock);
+                    bool added = false;
+                    for (int c = 0; c < OPENLOGI_MAX_CLIENTS; c++) {
+                        if (g_clients[c].fd < 0) {
+                            g_clients[c].fd = client_fd;
+                            g_clients[c].subscribed = false;
+                            g_clients[c].rx_len = 0;
+                            g_clients[c].rx_buf[0] = '\0';
+                            added = true;
+
+                            struct kevent cev;
+                            EV_SET(&cev, client_fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, NULL);
+                            kevent(g_kq, &cev, 1, NULL, 0, NULL);
+                            break;
+                        }
+                    }
+                    if (!added) {
+                        close(client_fd);
+                    }
+                    pthread_mutex_unlock(&g_clients_lock);
+                }
+                continue;
+            }
+
+            /* 3. Config file change */
+            pthread_mutex_lock(&g_watch_lock);
+            bool is_cfg_event = (filter == EVFILT_VNODE && ident == (uintptr_t)g_config_fd && g_config_fd >= 0);
+            ipc_file_watch_cb_t cfg_cb = g_config_cb;
+            void *cfg_ud = g_config_ud;
+            pthread_mutex_unlock(&g_watch_lock);
+
+            if (is_cfg_event) {
+                if (cfg_cb) {
+                    cfg_cb(g_watch_path, cfg_ud);
+                }
+
+                if (fflags & (NOTE_DELETE | NOTE_RENAME)) {
+                    /* Atomic file replacement by text editors: arm 50ms settling timer without sleeping! */
+                    pthread_mutex_lock(&g_watch_lock);
+                    if (g_config_fd >= 0) {
+                        close(g_config_fd);
+                        g_config_fd = -1;
+                    }
+                    struct kevent tev;
+                    EV_SET(&tev, TIMER_CONFIG_SETTLE, EVFILT_TIMER, EV_ADD | EV_ONESHOT, 0, 50, NULL);
+                    kevent(g_kq, &tev, 1, NULL, 0, NULL);
+                    pthread_mutex_unlock(&g_watch_lock);
+                }
+                continue;
+            }
+
+            /* 4. Config settling timer expired */
+            if (filter == EVFILT_TIMER && ident == TIMER_CONFIG_SETTLE) {
+                pthread_mutex_lock(&g_watch_lock);
+                if (g_watch_path[0] != '\0') {
+                    int new_fd = open(g_watch_path, O_RDONLY);
+                    if (new_fd >= 0) {
+                        g_config_fd = new_fd;
+                        struct kevent vev;
+                        EV_SET(&vev, g_config_fd, EVFILT_VNODE,
+                               EV_ADD | EV_ENABLE | EV_CLEAR,
+                               NOTE_WRITE | NOTE_DELETE | NOTE_RENAME | NOTE_ATTRIB, 0, NULL);
+                        kevent(g_kq, &vev, 1, NULL, 0, NULL);
+                    }
+                }
+                cfg_cb = g_config_cb;
+                cfg_ud = g_config_ud;
+                pthread_mutex_unlock(&g_watch_lock);
+
+                if (cfg_cb) {
+                    cfg_cb(g_watch_path, cfg_ud);
+                }
+                continue;
+            }
+
+            /* 5. Client socket I/O */
+            if (filter == EVFILT_READ) {
+                int client_fd = (int)ident;
+                bool client_closed = false;
+
+                pthread_mutex_lock(&g_clients_lock);
+                int slot = -1;
+                for (int c = 0; c < OPENLOGI_MAX_CLIENTS; c++) {
+                    if (g_clients[c].fd == client_fd) {
+                        slot = c;
+                        break;
+                    }
+                }
+
+                if (slot >= 0) {
+                    ipc_client_slot_t *cl = &g_clients[slot];
+                    ssize_t n = read(cl->fd, cl->rx_buf + cl->rx_len, sizeof(cl->rx_buf) - cl->rx_len - 1);
+                    if (n <= 0) {
+                        close(cl->fd);
+                        cl->fd = -1;
+                        cl->rx_len = 0;
+                        client_closed = true;
+                    } else {
+                        cl->rx_len += (size_t)n;
+                        cl->rx_buf[cl->rx_len] = '\0';
+                    }
+                }
+                pthread_mutex_unlock(&g_clients_lock);
+
+                if (slot >= 0 && !client_closed) {
+                    while (true) {
+                        char line_to_process[8192];
+                        line_to_process[0] = '\0';
+
+                        pthread_mutex_lock(&g_clients_lock);
+                        if (g_clients[slot].fd == client_fd) {
+                            ipc_client_slot_t *cl = &g_clients[slot];
+                            char *nl = strchr(cl->rx_buf, '\n');
+                            if (nl) {
+                                size_t line_bytes = (size_t)(nl - cl->rx_buf);
+                                if (line_bytes < sizeof(line_to_process)) {
+                                    memcpy(line_to_process, cl->rx_buf, line_bytes);
+                                    line_to_process[line_bytes] = '\0';
+                                }
+
+                                size_t remaining = cl->rx_len - (line_bytes + 1);
+                                if (remaining > 0) {
+                                    memmove(cl->rx_buf, nl + 1, remaining);
+                                }
+                                cl->rx_len = remaining;
+                                cl->rx_buf[cl->rx_len] = '\0';
+                            }
+                        }
+                        pthread_mutex_unlock(&g_clients_lock);
+
+                        if (line_to_process[0] == '\0') {
+                            break; /* No more complete lines */
+                        }
+
+                        size_t llen = strlen(line_to_process);
+                        if (llen > 0 && line_to_process[llen - 1] == '\r') {
+                            line_to_process[llen - 1] = '\0';
+                        }
+
+                        if (strlen(line_to_process) > 0) {
+                            if (strstr(line_to_process, "openlogi.subscribe")) {
+                                pthread_mutex_lock(&g_clients_lock);
+                                if (g_clients[slot].fd == client_fd) {
+                                    g_clients[slot].subscribed = true;
+                                }
+                                pthread_mutex_unlock(&g_clients_lock);
+                            }
+
+                            char *resp = ipc_dispatch_jsonrpc(g_ctx, line_to_process);
+                            if (resp) {
+                                size_t rlen = strlen(resp);
+                                pthread_mutex_lock(&g_clients_lock);
+                                if (g_clients[slot].fd == client_fd) {
+                                    (void)write(client_fd, resp, rlen);
+                                    (void)write(client_fd, "\n", 1);
+                                }
+                                pthread_mutex_unlock(&g_clients_lock);
+                                free(resp);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return NULL;
+#else
     while (g_is_running) {
         struct pollfd pfds[OPENLOGI_MAX_CLIENTS + 2];
         int pfd_count = 0;
@@ -438,13 +652,11 @@ static void *ipc_server_thread_main(void *arg)
         if (pfds[1].revents & POLLIN) {
             int client_fd = accept(g_listen_fd, NULL, NULL);
             if (client_fd >= 0) {
-                /* Set non-blocking */
                 fcntl(client_fd, F_SETFL, O_NONBLOCK);
 #ifdef SO_NOSIGPIPE
                 int nosigpipe = 1;
                 setsockopt(client_fd, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof(nosigpipe));
 #endif
-
                 pthread_mutex_lock(&g_clients_lock);
                 bool added = false;
                 for (int i = 0; i < OPENLOGI_MAX_CLIENTS; i++) {
@@ -487,13 +699,11 @@ static void *ipc_server_thread_main(void *arg)
                         char *nl = NULL;
                         while ((nl = strchr(line_start, '\n')) != NULL) {
                             *nl = '\0';
-                            /* Trim trailing \r */
                             if (nl > line_start && *(nl - 1) == '\r') {
                                 *(nl - 1) = '\0';
                             }
 
                             if (strlen(line_start) > 0) {
-                                /* Mark subscribed if subscribe request */
                                 if (strstr(line_start, "openlogi.subscribe")) {
                                     cl->subscribed = true;
                                 }
@@ -524,6 +734,7 @@ static void *ipc_server_thread_main(void *arg)
     }
 
     return NULL;
+#endif
 }
 
 bool ipc_server_start(const char *socket_path, openlogi_daemon_ctx_t *ctx)
@@ -585,6 +796,18 @@ bool ipc_server_start(const char *socket_path, openlogi_daemon_ctx_t *ctx)
         return false;
     }
 
+#ifdef OPENLOGI_USE_KQUEUE
+    g_kq = kqueue();
+    if (g_kq < 0) {
+        close(g_listen_fd);
+        g_listen_fd = -1;
+        unlink(g_socket_path);
+        close(g_stop_pipe[0]);
+        close(g_stop_pipe[1]);
+        return false;
+    }
+#endif
+
     /* Initialize client slots */
     pthread_mutex_lock(&g_clients_lock);
     for (int i = 0; i < OPENLOGI_MAX_CLIENTS; i++) {
@@ -595,8 +818,18 @@ bool ipc_server_start(const char *socket_path, openlogi_daemon_ctx_t *ctx)
     pthread_mutex_unlock(&g_clients_lock);
 
     g_is_running = true;
-    if (pthread_create(&g_server_thread, NULL, ipc_server_thread_main, NULL) != 0) {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 2 * 1024 * 1024);
+    int thread_rc = pthread_create(&g_server_thread, &attr, ipc_server_thread_main, NULL);
+    pthread_attr_destroy(&attr);
+
+    if (thread_rc != 0) {
         g_is_running = false;
+#ifdef OPENLOGI_USE_KQUEUE
+        close(g_kq);
+        g_kq = -1;
+#endif
         close(g_listen_fd);
         g_listen_fd = -1;
         unlink(g_socket_path);
@@ -619,6 +852,23 @@ void ipc_server_stop(void)
     }
 
     pthread_join(g_server_thread, NULL);
+
+#ifdef OPENLOGI_USE_KQUEUE
+    pthread_mutex_lock(&g_watch_lock);
+    if (g_config_fd >= 0) {
+        close(g_config_fd);
+        g_config_fd = -1;
+    }
+    g_watch_path[0] = '\0';
+    g_config_cb = NULL;
+    g_config_ud = NULL;
+    pthread_mutex_unlock(&g_watch_lock);
+
+    if (g_kq >= 0) {
+        close(g_kq);
+        g_kq = -1;
+    }
+#endif
 
     pthread_mutex_lock(&g_clients_lock);
     for (int i = 0; i < OPENLOGI_MAX_CLIENTS; i++) {
@@ -646,6 +896,54 @@ void ipc_server_stop(void)
         g_socket_path[0] = '\0';
     }
 }
+
+#ifdef OPENLOGI_USE_KQUEUE
+bool ipc_server_watch_file(const char *filepath, ipc_file_watch_cb_t callback, void *user_data)
+{
+    if (!filepath || !callback || !g_is_running || g_kq < 0) return false;
+
+    pthread_mutex_lock(&g_watch_lock);
+    strncpy(g_watch_path, filepath, sizeof(g_watch_path) - 1);
+    g_config_cb = callback;
+    g_config_ud = user_data;
+
+    if (g_config_fd >= 0) {
+        close(g_config_fd);
+        g_config_fd = -1;
+    }
+
+    g_config_fd = open(filepath, O_RDONLY);
+    if (g_config_fd >= 0) {
+        struct kevent ev;
+        EV_SET(&ev, g_config_fd, EVFILT_VNODE,
+               EV_ADD | EV_ENABLE | EV_CLEAR,
+               NOTE_WRITE | NOTE_DELETE | NOTE_RENAME | NOTE_ATTRIB, 0, NULL);
+        kevent(g_kq, &ev, 1, NULL, 0, NULL);
+    }
+    pthread_mutex_unlock(&g_watch_lock);
+    return true;
+}
+
+void ipc_server_unwatch_file(void)
+{
+    pthread_mutex_lock(&g_watch_lock);
+    if (g_config_fd >= 0) {
+        close(g_config_fd);
+        g_config_fd = -1;
+    }
+    g_watch_path[0] = '\0';
+    g_config_cb = NULL;
+    g_config_ud = NULL;
+    pthread_mutex_unlock(&g_watch_lock);
+}
+#else
+bool ipc_server_watch_file(const char *filepath, ipc_file_watch_cb_t callback, void *user_data)
+{
+    (void)filepath; (void)callback; (void)user_data;
+    return false;
+}
+void ipc_server_unwatch_file(void) {}
+#endif
 
 bool ipc_server_is_running(void)
 {

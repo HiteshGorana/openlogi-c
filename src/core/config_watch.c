@@ -4,6 +4,7 @@
  */
 
 #include "config_watch.h"
+#include "ipc_server.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +19,7 @@
 
 static pthread_t g_watch_thread;
 static volatile bool g_is_running = false;
+static bool g_using_ipc_thread = false;
 static int g_kq = -1;
 static int g_stop_pipe[2] = { -1, -1 };
 static char g_watch_path[512] = { 0 };
@@ -97,6 +99,17 @@ bool config_watch_start(const char *filepath, config_reload_cb_t callback, void 
         return true;
     }
 
+    /* If IPC server is already running, share its kqueue event loop (saves a thread) */
+    if (ipc_server_is_running()) {
+        if (ipc_server_watch_file(filepath, callback, user_data)) {
+            g_using_ipc_thread = true;
+            g_is_running = true;
+            pthread_mutex_unlock(&g_lock);
+            return true;
+        }
+    }
+
+    g_using_ipc_thread = false;
     strncpy(g_watch_path, filepath, sizeof(g_watch_path) - 1);
     g_callback = callback;
     g_user_data = user_data;
@@ -115,7 +128,13 @@ bool config_watch_start(const char *filepath, config_reload_cb_t callback, void 
     }
 
     g_is_running = true;
-    if (pthread_create(&g_watch_thread, NULL, watch_thread_main, NULL) != 0) {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 2 * 1024 * 1024);
+    int thread_rc = pthread_create(&g_watch_thread, &attr, watch_thread_main, NULL);
+    pthread_attr_destroy(&attr);
+
+    if (thread_rc != 0) {
         g_is_running = false;
         close(g_kq);
         g_kq = -1;
@@ -133,6 +152,14 @@ void config_watch_stop(void)
 {
     pthread_mutex_lock(&g_lock);
     if (!g_is_running) {
+        pthread_mutex_unlock(&g_lock);
+        return;
+    }
+
+    if (g_using_ipc_thread) {
+        ipc_server_unwatch_file();
+        g_using_ipc_thread = false;
+        g_is_running = false;
         pthread_mutex_unlock(&g_lock);
         return;
     }

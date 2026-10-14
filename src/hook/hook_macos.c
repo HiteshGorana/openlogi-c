@@ -170,7 +170,13 @@ bool hook_start(void)
         return false;
     }
 
-    if (pthread_create(&g_tap_thread, NULL, tap_thread_main, NULL) != 0) {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 2 * 1024 * 1024);
+    int thread_rc = pthread_create(&g_tap_thread, &attr, tap_thread_main, NULL);
+    pthread_attr_destroy(&attr);
+
+    if (thread_rc != 0) {
         CFRelease(g_run_loop_source);
         g_run_loop_source = NULL;
         CFRelease(g_tap_port);

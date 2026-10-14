@@ -253,7 +253,7 @@ Hot-reloads `~/.config/openlogi/config.toml` on demand.
 
 ---
 
-## 7. Automated Test Suite (20 Suites / 103 Tests)
+## 7. Automated Test Suite (20 Suites / 107 Tests)
 
 The test harness provides comprehensive coverage with 0 external dependencies:
 
@@ -276,8 +276,8 @@ make asan
 | **02** | `test_device_probe.c` | 5 | IOKit / hidraw enumeration, root queries, battery, feature discovery |
 | **03** | `test_diversion_and_hook.c` | 6 | 0x1B04 button diversion, CID masks, safety teardown on signals |
 | **04** | `test_gesture_and_inject.c` | 6 | Swipe accumulator, 4-way gesture commit, native CGEvent injection |
-| **05** | `test_config.c` | 5 | Schema v7 TOML parsing, kqueue file watcher, app watcher |
-| **06** | `test_ipc_server.c` | 5 | Non-blocking UNIX socket, JSON-RPC dispatch, concurrent clients |
+| **05** | `test_config.c` | 7 | Schema v7 TOML parsing, kqueue file watcher, app watcher, transactional reload |
+| **06** | `test_ipc_server.c` | 7 | Non-blocking UNIX socket, JSON-RPC dispatch, concurrent clients, kqueue file watcher |
 | **07** | `test_cli.c` | 5 | openlogictl & unified openlogi dispatch, installed executable path resolution, autostart management |
 | **08** | `test_single_instance.c` | 2 | POSIX flock file lock, duplicate daemon prevention, stale PID purge |
 | **09** | `test_button_runtime.c` | 7 | Press state machine, short click vs long press, hold timeouts |
@@ -296,6 +296,12 @@ make asan
 ---
 
 ## 8. Development & Maintenance Guidelines
+
+### C Best-Practices Skill
+
+Before writing, refactoring, or reviewing C source, headers, or C build and test changes, read and apply the repository's [c-best-practices skill](skills/c-best-practices/SKILL.md).
+
+The skill covers ownership and resource cleanup, bounds and undefined behavior, error handling, portable C99 interfaces, thread synchronization, event-loop responsiveness, and validation. Apply the guidance relevant to the task; keep changes within the user's requested scope. This AGENTS.md remains the canonical repository architecture and requirements contract.
 
 1. **Strict Standards Compliance**:
    - Write standard C99 (`-std=c99`). Never use compiler-specific GNU extensions without portable fallback `#ifdef` guards.
