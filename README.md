@@ -280,6 +280,7 @@ For a foreground development session, stop an installed daemon first, then run `
 | Run the C suites | `make test VERBOSE=1` |
 | Rebuild/run with ASan and UBSan | `make asan VERBOSE=1` |
 | Run offline installer checks | `sh tests/test_install.sh` |
+| Run offline release-publishing checks | `sh tests/test_release.sh` |
 | Strip the built executable | `make strip` |
 | Install a source build | `make install PREFIX="$HOME/.local"` |
 | Uninstall from a source checkout | `make uninstall PREFIX="$HOME/.local"` |
@@ -287,6 +288,8 @@ For a foreground development session, stop an installed daemon first, then run `
 **Current test behavior:** some C suites invoke real macOS input injection, including desktop and media actions. Test isolation is a priority in the roadmap. Component tests do not establish hardware compatibility, and sanitizer output does not by itself prove leak freedom or complete instrumentation.
 
 The [macOS CI workflow](.github/workflows/macos.yml) builds and tests with Clang, runs installer checks, and runs ASan/UBSan. The [release workflow](.github/workflows/release.yml) tests Apple Silicon and Intel builds, packages ad-hoc-signed binaries, and publishes archives and checksums for version tags. Physical hardware and permission behavior require separate verification.
+
+Release publishing creates a draft, uploads both architectures and checksums, then publishes it. Retries resume an unfinished draft or skip an already-published release, preserving its downloads. Publishing jobs for the same tag run serially. Use a new version tag for a new release; documentation-only changes can stay on `main` without creating or moving a release tag. Rerunning an older Actions run still uses that run's original workflow revision.
 
 ### Repository map
 

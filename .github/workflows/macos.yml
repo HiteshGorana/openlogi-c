@@ -28,6 +28,9 @@ jobs:
       - name: Test installer and updater
         run: sh tests/test_install.sh
 
+      - name: Test release publishing
+        run: sh tests/test_release.sh
+
       - name: Run tests
         run: make test VERBOSE=1
 
