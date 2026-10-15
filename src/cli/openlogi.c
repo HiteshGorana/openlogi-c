@@ -60,6 +60,8 @@ static void print_unified_help(const char *progname)
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/hidsystem/IOHIDLib.h>
 #include <mach-o/dyld.h>
+#include <objc/runtime.h>
+#include <objc/message.h>
 #include <sys/stat.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -97,6 +99,91 @@ static bool is_running_from_dmg_or_translocation(const char *path)
     return false;
 }
 
+static void run_alert(const char *title, const char *msg,
+                      const char *btn1, const char *btn2, const char *btn3,
+                      char *out_btn, size_t out_sz)
+{
+    if (out_btn && out_sz > 0) out_btn[0] = '\0';
+
+    Class nsAppClass = objc_getClass("NSApplication");
+    if (!nsAppClass) return;
+
+    SEL sharedAppSel = sel_registerName("sharedApplication");
+    id app = ((id (*)(id, SEL))objc_msgSend)((id)nsAppClass, sharedAppSel);
+    if (!app) return;
+
+    SEL setActivationPolicySel = sel_registerName("setActivationPolicy:");
+    ((void (*)(id, SEL, long))objc_msgSend)(app, setActivationPolicySel, 1);
+
+    SEL finishLaunchingSel = sel_registerName("finishLaunching");
+    ((void (*)(id, SEL))objc_msgSend)(app, finishLaunchingSel);
+
+    SEL activateSel = sel_registerName("activateIgnoringOtherApps:");
+    ((void (*)(id, SEL, bool))objc_msgSend)(app, activateSel, true);
+
+    Class nsAlertClass = objc_getClass("NSAlert");
+    if (!nsAlertClass) return;
+
+    SEL allocSel = sel_registerName("alloc");
+    SEL initSel = sel_registerName("init");
+    id alert = ((id (*)(id, SEL))objc_msgSend)(((id (*)(id, SEL))objc_msgSend)((id)nsAlertClass, allocSel), initSel);
+    if (!alert) return;
+
+    CFStringRef cfTitle = CFStringCreateWithCString(kCFAllocatorDefault, title ? title : "", kCFStringEncodingUTF8);
+    CFStringRef cfMsg = CFStringCreateWithCString(kCFAllocatorDefault, msg ? msg : "", kCFStringEncodingUTF8);
+
+    SEL setMessageTextSel = sel_registerName("setMessageText:");
+    ((void (*)(id, SEL, id))objc_msgSend)(alert, setMessageTextSel, (id)cfTitle);
+
+    SEL setInformativeTextSel = sel_registerName("setInformativeText:");
+    ((void (*)(id, SEL, id))objc_msgSend)(alert, setInformativeTextSel, (id)cfMsg);
+
+    SEL addButtonSel = sel_registerName("addButtonWithTitle:");
+    if (btn1 && btn1[0]) {
+        CFStringRef cf1 = CFStringCreateWithCString(kCFAllocatorDefault, btn1, kCFStringEncodingUTF8);
+        ((void (*)(id, SEL, id))objc_msgSend)(alert, addButtonSel, (id)cf1);
+        CFRelease(cf1);
+    }
+    if (btn2 && btn2[0]) {
+        CFStringRef cf2 = CFStringCreateWithCString(kCFAllocatorDefault, btn2, kCFStringEncodingUTF8);
+        ((void (*)(id, SEL, id))objc_msgSend)(alert, addButtonSel, (id)cf2);
+        CFRelease(cf2);
+    }
+    if (btn3 && btn3[0]) {
+        CFStringRef cf3 = CFStringCreateWithCString(kCFAllocatorDefault, btn3, kCFStringEncodingUTF8);
+        ((void (*)(id, SEL, id))objc_msgSend)(alert, addButtonSel, (id)cf3);
+        CFRelease(cf3);
+    }
+
+    SEL windowSel = sel_registerName("window");
+    id alertWindow = ((id (*)(id, SEL))objc_msgSend)(alert, windowSel);
+    if (alertWindow) {
+        SEL setLevelSel = sel_registerName("setLevel:");
+        ((void (*)(id, SEL, long))objc_msgSend)(alertWindow, setLevelSel, 8);
+        SEL centerSel = sel_registerName("center");
+        ((void (*)(id, SEL))objc_msgSend)(alertWindow, centerSel);
+    }
+
+    SEL runModalSel = sel_registerName("runModal");
+    long resp = ((long (*)(id, SEL))objc_msgSend)(alert, runModalSel);
+
+    const char *clicked = "";
+    if (resp == 1000) clicked = btn1 ? btn1 : "";
+    else if (resp == 1001) clicked = btn2 ? btn2 : "";
+    else if (resp == 1002) clicked = btn3 ? btn3 : "";
+
+    if (out_btn && out_sz > 0) {
+        strncpy(out_btn, clicked, out_sz - 1);
+        out_btn[out_sz - 1] = '\0';
+    }
+
+    if (cfTitle) CFRelease(cfTitle);
+    if (cfMsg) CFRelease(cfMsg);
+
+    SEL releaseSel = sel_registerName("release");
+    ((void (*)(id, SEL))objc_msgSend)(alert, releaseSel);
+}
+
 static int handle_dmg_launch(void)
 {
     const char *home = getenv("HOME");
@@ -107,29 +194,15 @@ static int handle_dmg_launch(void)
     bool installed_exists = (access("/Applications/OpenLogi.app", F_OK) == 0) ||
                             (user_app[0] && access(user_app, F_OK) == 0);
 
-    char script[1024];
-    if (installed_exists) {
-        snprintf(script, sizeof(script),
-            "osascript -e 'set res to button returned of (display alert \"Install OpenLogi to Continue\" "
-            "message \"OpenLogi is currently running from a disk image or temporary folder, but an installed copy was found in your Applications folder.\n\n"
-            "Please open OpenLogi from Applications to continue.\" "
-            "buttons {\"Open Applications\", \"Quit\"} default button \"Open Applications\")\nreturn res' 2>/dev/null");
-    } else {
-        snprintf(script, sizeof(script),
-            "osascript -e 'set res to button returned of (display alert \"Install OpenLogi to Continue\" "
-            "message \"OpenLogi cannot run directly from a disk image.\n\n"
-            "Please drag OpenLogi to your Applications folder and open it from there.\" "
-            "buttons {\"Open Applications\", \"Quit\"} default button \"Open Applications\")\nreturn res' 2>/dev/null");
-    }
-
-    FILE *fp = popen(script, "r");
     char btn[64] = { 0 };
-    if (fp) {
-        if (fgets(btn, sizeof(btn), fp)) {
-            char *nl = strchr(btn, '\n'); if (nl) *nl = '\0';
-            char *cr = strchr(btn, '\r'); if (cr) *cr = '\0';
-        }
-        pclose(fp);
+    if (installed_exists) {
+        run_alert("Install OpenLogi to Continue",
+                  "OpenLogi is currently running from a disk image or temporary folder, but an installed copy was found in your Applications folder.\n\nPlease open OpenLogi from Applications to continue.",
+                  "Open Applications", "Quit", NULL, btn, sizeof(btn));
+    } else {
+        run_alert("Install OpenLogi to Continue",
+                  "OpenLogi cannot run directly from a disk image.\n\nPlease drag OpenLogi to your Applications folder and open it from there.",
+                  "Open Applications", "Quit", NULL, btn, sizeof(btn));
     }
 
     if (strcmp(btn, "Open Applications") == 0) {
@@ -273,23 +346,6 @@ static void save_onboarding_state(bool completed, const char *step)
     fclose(f);
 }
 
-static void run_alert(const char *title, const char *msg, const char *buttons, const char *default_btn, char *out_btn, size_t out_sz)
-{
-    char script[2048];
-    snprintf(script, sizeof(script),
-        "osascript -e 'set res to button returned of (display alert \"%s\" message \"%s\" buttons %s default button \"%s\")\nreturn res' 2>/dev/null",
-        title, msg, buttons, default_btn);
-    FILE *fp = popen(script, "r");
-    if (out_btn && out_sz > 0) out_btn[0] = '\0';
-    if (fp) {
-        if (out_btn && out_sz > 0 && fgets(out_btn, (int)out_sz, fp)) {
-            char *nl = strchr(out_btn, '\n'); if (nl) *nl = '\0';
-            char *cr = strchr(out_btn, '\r'); if (cr) *cr = '\0';
-        }
-        pclose(fp);
-    }
-}
-
 static bool ensure_daemon_running(const char *arg0)
 {
     ipc_client_t client;
@@ -348,7 +404,7 @@ static int handle_already_running(pid_t existing_pid)
 
     char out[64] = { 0 };
     run_alert("OpenLogi is Running", prompt_msg,
-              "{\"Keep Running\", \"Stop OpenLogi\", \"Uninstall\"}", "Keep Running", out, sizeof(out));
+              "Keep Running", "Stop OpenLogi", "Uninstall", out, sizeof(out));
 
     const char *home = getenv("HOME");
     char plist_path[512] = { 0 };
@@ -363,8 +419,6 @@ static int handle_already_running(pid_t existing_pid)
         snprintf(bootout, sizeof(bootout), "/bin/launchctl bootout %s 2>/dev/null", target);
         (void)system(bootout);
 
-        (void)system("for j in $(/bin/launchctl list | /usr/bin/grep -o 'application\\.io\\.github\\.openlogi\\.agent[^ ]*'); do /bin/launchctl bootout \"gui/$(id -u)/$j\" 2>/dev/null; done");
-
         kill(existing_pid, SIGTERM);
         for (int i = 0; i < 20; i++) {
             if (kill(existing_pid, 0) != 0) break;
@@ -373,15 +427,13 @@ static int handle_already_running(pid_t existing_pid)
         if (kill(existing_pid, 0) == 0) {
             kill(existing_pid, SIGKILL);
         }
-        (void)system("osascript -e 'display notification \"OpenLogi stopped and restored mouse hardware.\" with title \"OpenLogi\"' 2>/dev/null &");
+        run_alert("OpenLogi Stopped", "OpenLogi driver has stopped and restored mouse hardware.", "OK", NULL, NULL, NULL, 0);
     } else if (strcmp(out, "Uninstall") == 0) {
         char target[128];
         snprintf(target, sizeof(target), "gui/%u/io.github.openlogi.agent", (unsigned)getuid());
         char bootout[256];
         snprintf(bootout, sizeof(bootout), "/bin/launchctl bootout %s 2>/dev/null", target);
         (void)system(bootout);
-
-        (void)system("for j in $(/bin/launchctl list | /usr/bin/grep -o 'application\\.io\\.github\\.openlogi\\.agent[^ ]*'); do /bin/launchctl bootout \"gui/$(id -u)/$j\" 2>/dev/null; done");
 
         if (plist_path[0]) unlink(plist_path);
         kill(existing_pid, SIGTERM);
@@ -394,12 +446,14 @@ static int handle_already_running(pid_t existing_pid)
         }
 
         if (home) {
-            char sock_path[512], lock_path[512], state_path[512];
+            char sock_path[512], lock_path[512], agent_lock[512], state_path[512];
             snprintf(sock_path, sizeof(sock_path), "%s/.local/state/openlogi/openlogi.sock", home);
             snprintf(lock_path, sizeof(lock_path), "%s/.local/state/openlogi/openlogi.lock", home);
+            snprintf(agent_lock, sizeof(agent_lock), "%s/.local/state/openlogi/agent.lock", home);
             snprintf(state_path, sizeof(state_path), "%s/.local/state/openlogi/onboarding.state", home);
             unlink(sock_path);
             unlink(lock_path);
+            unlink(agent_lock);
             unlink(state_path);
         }
 
@@ -418,7 +472,7 @@ static int handle_already_running(pid_t existing_pid)
             (void)system(trash_cmd);
         }
 
-        (void)system("osascript -e 'display alert \"OpenLogi Uninstalled\" message \"OpenLogi has been cleanly uninstalled, startup services removed, and the application moved to Trash.\" buttons {\"OK\"} default button \"OK\"' 2>/dev/null &");
+        run_alert("OpenLogi Uninstalled", "OpenLogi has been cleanly uninstalled, startup services removed, and the application moved to Trash.", "OK", NULL, NULL, NULL, 0);
     }
     return 0;
 }
@@ -427,9 +481,18 @@ static int handle_app_bundle_launch(int argc, char **argv)
 {
     (void)argc;
 
-    /* Check in with LaunchServices / WindowServer immediately so macOS never marks the app as not responding */
-    ProcessSerialNumber psn = { 0, kCurrentProcess };
-    (void)TransformProcessType(&psn, kProcessTransformToUIElementApplication);
+    /* Initialize NSApplication and check in with LaunchServices immediately */
+    Class nsAppClass = objc_getClass("NSApplication");
+    if (nsAppClass) {
+        SEL sharedAppSel = sel_registerName("sharedApplication");
+        id app = ((id (*)(id, SEL))objc_msgSend)((id)nsAppClass, sharedAppSel);
+        if (app) {
+            SEL setActivationPolicySel = sel_registerName("setActivationPolicy:");
+            ((void (*)(id, SEL, long))objc_msgSend)(app, setActivationPolicySel, 1);
+            SEL finishLaunchingSel = sel_registerName("finishLaunching");
+            ((void (*)(id, SEL))objc_msgSend)(app, finishLaunchingSel);
+        }
+    }
 
     /* 1. DMG / Translocation safety check */
     char exec_path[1024] = { 0 };
@@ -458,10 +521,10 @@ static int handle_app_bundle_launch(int argc, char **argv)
     if (completed) {
         char btn[64] = { 0 };
         run_alert("OpenLogi", "OpenLogi is currently stopped.\n\nWhat would you like to do?",
-                  "{\"Start OpenLogi\", \"Re-run Setup\", \"Quit\"}", "Start OpenLogi", btn, sizeof(btn));
+                  "Start OpenLogi", "Re-run Setup", "Quit", btn, sizeof(btn));
         if (strcmp(btn, "Start OpenLogi") == 0) {
             ensure_daemon_running(argv[0]);
-            (void)system("osascript -e 'display notification \"OpenLogi driver is now running in background.\" with title \"OpenLogi\"' 2>/dev/null &");
+            run_alert("OpenLogi Started", "OpenLogi driver is now running silently in the background.", "OK", NULL, NULL, NULL, 0);
             return 0;
         } else if (strcmp(btn, "Re-run Setup") == 0) {
             completed = false;
@@ -476,7 +539,7 @@ static int handle_app_bundle_launch(int argc, char **argv)
         char btn[64] = { 0 };
         run_alert("Set Up Your Logitech Mouse",
                   "OpenLogi customizes your mouse buttons and scrolling.\n\nWe will check permissions, find your mouse, and test a button before applying settings.",
-                  "{\"Set Up My Mouse\", \"Finish Later\"}", "Set Up My Mouse", btn, sizeof(btn));
+                  "Set Up My Mouse", "Finish Later", NULL, btn, sizeof(btn));
         if (strcmp(btn, "Finish Later") == 0) {
             save_onboarding_state(false, "welcome");
             return 0;
@@ -486,49 +549,64 @@ static int handle_app_bundle_launch(int argc, char **argv)
     }
 
     /* Step 2: Input Monitoring */
+    bool opened_settings = false;
     while (true) {
         bool inp = (IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted);
         if (inp) break;
 
         char btn[64] = { 0 };
-        run_alert("Allow OpenLogi to Receive Mouse Input",
-                  "Step 1 of 4: Input Monitoring\n\nOpenLogi uses Input Monitoring to receive input from mouse buttons and scrolling.\n\nmacOS describes this permission broadly because it allows monitoring keyboard, mouse, and trackpad events.\n\nClick 'Enable Input Monitoring' to open System Settings, toggle OpenLogi ON, and return here.",
-                  "{\"Enable Input Monitoring\", \"Check Again\", \"Finish Later\"}", "Enable Input Monitoring", btn, sizeof(btn));
+        if (!opened_settings) {
+            run_alert("Allow OpenLogi to Receive Mouse Input",
+                      "Step 1 of 4: Input Monitoring\n\nOpenLogi uses Input Monitoring to receive input from mouse buttons and scrolling.\n\nmacOS describes this permission broadly because it allows monitoring keyboard, mouse, and trackpad events.\n\nClick 'Open System Settings' to toggle OpenLogi ON, then click 'Check Again'.",
+                      "Open System Settings", "Check Again", "Finish Later", btn, sizeof(btn));
+        } else {
+            run_alert("Waiting for Input Monitoring",
+                      "In System Settings:\n1. Find OpenLogi in the list.\n2. Toggle it ON.\n3. If macOS prompts 'Quit & Reopen', accept it.\n\nClick 'Check Again' once enabled.",
+                      "Check Again", "Open System Settings", "Finish Later", btn, sizeof(btn));
+        }
+
         if (strcmp(btn, "Finish Later") == 0) {
             save_onboarding_state(false, "input_monitoring");
             return 0;
         }
-        if (strcmp(btn, "Enable Input Monitoring") == 0) {
+
+        if (strcmp(btn, "Open System Settings") == 0) {
             IOHIDRequestAccess(kIOHIDRequestTypeListenEvent);
             CGRequestListenEventAccess();
             (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent\" 2>/dev/null");
+            opened_settings = true;
         }
-        for (int i = 0; i < 30; i++) {
-            usleep(500000);
-            if (IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted) {
-                inp = true;
-                break;
-            }
+
+        if (IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted) {
+            break;
         }
-        if (inp) break;
     }
     save_onboarding_state(false, "accessibility");
     strncpy(step, "accessibility", sizeof(step));
 
     /* Step 3: Accessibility */
+    opened_settings = false;
     while (true) {
         bool acc = AXIsProcessTrusted();
         if (acc) break;
 
         char btn[64] = { 0 };
-        run_alert("Allow Mouse Buttons to Perform Actions",
-                  "Step 2 of 4: Accessibility\n\nOpenLogi uses Accessibility access for customized actions such as shortcuts and window navigation.\n\nClick 'Enable Accessibility' to open System Settings, toggle OpenLogi ON, and return here.",
-                  "{\"Enable Accessibility\", \"Check Again\", \"Finish Later\"}", "Enable Accessibility", btn, sizeof(btn));
+        if (!opened_settings) {
+            run_alert("Allow Mouse Buttons to Perform Actions",
+                      "Step 2 of 4: Accessibility\n\nOpenLogi uses Accessibility access for customized actions such as shortcuts and window navigation.\n\nClick 'Open System Settings' to toggle OpenLogi ON, then click 'Check Again'.",
+                      "Open System Settings", "Check Again", "Finish Later", btn, sizeof(btn));
+        } else {
+            run_alert("Waiting for Accessibility",
+                      "In System Settings:\n1. Find OpenLogi in Accessibility.\n2. Toggle it ON.\n\nClick 'Check Again' once enabled.",
+                      "Check Again", "Open System Settings", "Finish Later", btn, sizeof(btn));
+        }
+
         if (strcmp(btn, "Finish Later") == 0) {
             save_onboarding_state(false, "accessibility");
             return 0;
         }
-        if (strcmp(btn, "Enable Accessibility") == 0) {
+
+        if (strcmp(btn, "Open System Settings") == 0) {
             const void *keys[] = { kAXTrustedCheckOptionPrompt };
             const void *values[] = { kCFBooleanTrue };
             CFDictionaryRef options = CFDictionaryCreate(
@@ -540,63 +618,63 @@ static int handle_app_bundle_launch(int argc, char **argv)
                 CFRelease(options);
             }
             (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility\" 2>/dev/null");
+            opened_settings = true;
         }
-        for (int i = 0; i < 30; i++) {
-            usleep(500000);
-            if (AXIsProcessTrusted()) {
-                acc = true;
-                break;
-            }
+
+        if (AXIsProcessTrusted()) {
+            break;
         }
-        if (acc) break;
     }
     save_onboarding_state(false, "mouse");
     strncpy(step, "mouse", sizeof(step));
 
     /* Step 4: Find and Select Mouse */
-    ensure_daemon_running(argv[0]);
+    while (true) {
+        ensure_daemon_running(argv[0]);
 
-    char mouse_info[256] = { 0 };
-    bool found_mouse = false;
-    ipc_client_t client;
-    if (ipc_client_connect(NULL, &client)) {
-        yyjson_doc *inv = ipc_client_call(&client, "openlogi.get_inventory", "{}");
-        if (inv) {
-            yyjson_val *root = yyjson_doc_get_root(inv);
-            yyjson_val *res = yyjson_obj_get(root, "result");
-            yyjson_val *devs = yyjson_obj_get(res, "devices");
-            if (yyjson_is_arr(devs) && yyjson_arr_size(devs) > 0) {
-                yyjson_val *d0 = yyjson_arr_get(devs, 0);
-                const char *pname = yyjson_get_str(yyjson_obj_get(d0, "product_name"));
-                uint32_t bval = (uint32_t)yyjson_get_uint(yyjson_obj_get(d0, "battery_percent"));
-                snprintf(mouse_info, sizeof(mouse_info), "%s (Battery: %u%%)", pname ? pname : "Logitech Mouse", (unsigned)bval);
-                found_mouse = true;
+        char mouse_info[256] = { 0 };
+        bool found_mouse = false;
+        ipc_client_t client;
+        if (ipc_client_connect(NULL, &client)) {
+            yyjson_doc *inv = ipc_client_call(&client, "openlogi.get_inventory", "{}");
+            if (inv) {
+                yyjson_val *root = yyjson_doc_get_root(inv);
+                yyjson_val *res = yyjson_obj_get(root, "result");
+                yyjson_val *devs = yyjson_obj_get(res, "devices");
+                if (yyjson_is_arr(devs) && yyjson_arr_size(devs) > 0) {
+                    yyjson_val *d0 = yyjson_arr_get(devs, 0);
+                    const char *pname = yyjson_get_str(yyjson_obj_get(d0, "product_name"));
+                    uint32_t bval = (uint32_t)yyjson_get_uint(yyjson_obj_get(d0, "battery_percent"));
+                    snprintf(mouse_info, sizeof(mouse_info), "%s (Battery: %u%%)", pname ? pname : "Logitech Mouse", (unsigned)bval);
+                    found_mouse = true;
+                }
+                yyjson_doc_free(inv);
             }
-            yyjson_doc_free(inv);
+            ipc_client_close(&client);
         }
-        ipc_client_close(&client);
-    }
 
-    if (found_mouse) {
-        char btn[64] = { 0 };
-        char msg[512];
-        snprintf(msg, sizeof(msg),
-                 "Step 3 of 4: Mouse Detected\n\nFound: %s\n\nYour mouse is communicating with OpenLogi.",
-                 mouse_info);
-        run_alert("Logitech Mouse Detected", msg, "{\"Continue\", \"Finish Later\"}", "Continue", btn, sizeof(btn));
-        if (strcmp(btn, "Finish Later") == 0) {
-            save_onboarding_state(false, "mouse");
-            return 0;
-        }
-    } else {
-        char btn[64] = { 0 };
-        run_alert("Waiting for Your Mouse",
-                  "Step 3 of 4: Connect Mouse\n\nTurn on your Logitech mouse and connect it via Bluetooth or its USB receiver.\n\nOpenLogi will automatically detect it once connected.",
-                  "{\"Check Again\", \"Finish Later\"}", "Check Again", btn, sizeof(btn));
-        if (strcmp(btn, "Finish Later") == 0) {
-            save_onboarding_state(false, "mouse");
-            (void)system("osascript -e 'display alert \"Setup Saved\" message \"Setup progress saved. Connect your mouse anytime and re-open OpenLogi to finish.\" buttons {\"OK\"} default button \"OK\"' 2>/dev/null &");
-            return 0;
+        if (found_mouse) {
+            char btn[64] = { 0 };
+            char msg[512];
+            snprintf(msg, sizeof(msg),
+                     "Step 3 of 4: Mouse Detected\n\nFound: %s\n\nYour mouse is communicating with OpenLogi.",
+                     mouse_info);
+            run_alert("Logitech Mouse Detected", msg, "Continue", "Finish Later", NULL, btn, sizeof(btn));
+            if (strcmp(btn, "Finish Later") == 0) {
+                save_onboarding_state(false, "mouse");
+                return 0;
+            }
+            break;
+        } else {
+            char btn[64] = { 0 };
+            run_alert("Waiting for Your Mouse",
+                      "Step 3 of 4: Connect Mouse\n\nTurn on your Logitech mouse and connect it via Bluetooth or its USB receiver.\n\nOpenLogi will automatically detect it once connected.",
+                      "Check Again", "Finish Later", NULL, btn, sizeof(btn));
+            if (strcmp(btn, "Finish Later") == 0) {
+                save_onboarding_state(false, "mouse");
+                run_alert("Setup Saved", "Setup progress saved. Connect your mouse anytime and re-open OpenLogi to finish.", "OK", NULL, NULL, NULL, 0);
+                return 0;
+            }
         }
     }
 
@@ -604,7 +682,7 @@ static int handle_app_bundle_launch(int argc, char **argv)
     char btn_test[64] = { 0 };
     run_alert("Test a Side Button",
               "Step 4 of 4: Verification\n\nClick any side button or gesture button on your mouse to verify that OpenLogi intercepts it, or click 'Skip Test'.",
-              "{\"Test Side Button\", \"Skip Test\"}", "Test Side Button", btn_test, sizeof(btn_test));
+              "Test Side Button", "Skip Test", NULL, btn_test, sizeof(btn_test));
 
     if (strcmp(btn_test, "Test Side Button") == 0) {
         ipc_client_t test_client;
@@ -632,10 +710,10 @@ static int handle_app_bundle_launch(int argc, char **argv)
 
             if (heard) {
                 run_alert("Button Verified!", "OpenLogi successfully intercepted the button click from your mouse.",
-                          "{\"Continue\"}", "Continue", NULL, 0);
+                          "Continue", NULL, NULL, NULL, 0);
             } else {
                 run_alert("No Click Detected", "No button event was detected during the test window. You can customize controls anytime.",
-                          "{\"Continue\"}", "Continue", NULL, 0);
+                          "Continue", NULL, NULL, NULL, 0);
             }
         }
     }
@@ -644,7 +722,7 @@ static int handle_app_bundle_launch(int argc, char **argv)
     char btn_auto[64] = { 0 };
     run_alert("OpenLogi Setup Complete",
               "Your Logitech mouse is now configured!\n\nWould you like OpenLogi to start automatically whenever you log in to your Mac?",
-              "{\"Start at Login\", \"No, Start Manually\"}", "Start at Login", btn_auto, sizeof(btn_auto));
+              "Start at Login", "No, Start Manually", NULL, btn_auto, sizeof(btn_auto));
 
     if (strcmp(btn_auto, "Start at Login") == 0) {
         macos_configure_autostart(argv[0], true);
@@ -657,7 +735,7 @@ static int handle_app_bundle_launch(int argc, char **argv)
 
     run_alert("OpenLogi is Active",
               "Setup is complete! OpenLogi is running silently in the background.\n\nYou can customize buttons and gestures anytime in:\n~/.config/openlogi/config.toml",
-              "{\"OK\"}", "OK", NULL, 0);
+              "OK", NULL, NULL, NULL, 0);
 
     return 0;
 }
