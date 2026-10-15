@@ -124,8 +124,8 @@ int main(int argc, char **argv)
 
     /* 3. Invocation with argc == 1 (no arguments) */
 #ifdef __APPLE__
-    /* If run as an .app bundle or launched by Finder/GUI without a terminal, launch onboarding */
-    if (strstr(argv[0], ".app/Contents/MacOS/") != NULL || isatty(STDIN_FILENO) == 0) {
+    /* If run directly as an .app bundle from Finder / GUI, launch onboarding UI */
+    if (strstr(argv[0], ".app/Contents/MacOS/") != NULL) {
         return macos_onboarding_main();
     }
 #endif

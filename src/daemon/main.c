@@ -38,6 +38,8 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <ApplicationServices/ApplicationServices.h>
 #include <IOKit/hidsystem/IOHIDLib.h>
+#include <objc/runtime.h>
+#include <objc/message.h>
 extern bool CGPreflightListenEventAccess(void);
 extern bool CGRequestListenEventAccess(void);
 #endif
@@ -874,6 +876,22 @@ int daemon_main(int argc, char **argv)
 #if defined(__APPLE__) || defined(__linux__)
     setlinebuf(stdout);
     setlinebuf(stderr);
+#endif
+
+#ifdef __APPLE__
+    /* Check in with LaunchServices/WindowServer as a prohibited background process.
+     * This registers the process immediately so LaunchServices knows it is running,
+     * while Prohibited policy ensures Finder never routes GUI AppleEvents here or flags
+     * the app as "Not Responding" when OpenLogi.app is opened. */
+    id pool = ((id (*)(id, SEL))objc_msgSend)((id)objc_getClass("NSAutoreleasePool"), sel_registerName("new"));
+    id app = ((id (*)(id, SEL))objc_msgSend)((id)objc_getClass("NSApplication"), sel_registerName("sharedApplication"));
+    if (app) {
+        ((void (*)(id, SEL, long))objc_msgSend)(app, sel_registerName("setActivationPolicy:"), 2); /* NSApplicationActivationPolicyProhibited */
+        ((void (*)(id, SEL))objc_msgSend)(app, sel_registerName("finishLaunching"));
+    }
+    if (pool) {
+        ((void (*)(id, SEL))objc_msgSend)(pool, sel_registerName("drain"));
+    }
 #endif
 
     printf("[openlogid] Starting OpenLogi Daemon v%s (PID: %d)...\n", OPENLOGI_AGENT_VERSION, getpid());

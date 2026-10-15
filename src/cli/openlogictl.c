@@ -1322,11 +1322,15 @@ static int cmd_autostart(int argc, char **argv)
         char domain[64], service[128];
         snprintf(domain, sizeof(domain), "gui/%u", (unsigned)getuid());
         snprintf(service, sizeof(service), "%s/io.github.openlogi.agent", domain);
-        (void)run_launchctl("bootout", service, NULL, true);
         (void)run_launchctl("enable", service, NULL, true);
-        if (run_launchctl("bootstrap", domain, plist_path, false) != 0) {
-            fprintf(stderr, "[-] Could not restart LaunchAgent at %s\n", plist_path);
-            return 1;
+        if (run_launchctl("kickstart", "-k", service, true) != 0) {
+            (void)run_launchctl("bootout", service, NULL, true);
+            (void)run_launchctl("enable", service, NULL, true);
+            if (run_launchctl("bootstrap", domain, plist_path, false) != 0) {
+                fprintf(stderr, "[-] Could not restart LaunchAgent at %s\n", plist_path);
+                return 1;
+            }
+            (void)run_launchctl("kickstart", "-k", service, true);
         }
 
         ipc_client_t test_c;
@@ -1356,11 +1360,15 @@ static int cmd_autostart(int argc, char **argv)
         char domain[64], service[128];
         snprintf(domain, sizeof(domain), "gui/%u", (unsigned)getuid());
         snprintf(service, sizeof(service), "%s/io.github.openlogi.agent", domain);
-        (void)run_launchctl("bootout", service, NULL, true);
         (void)run_launchctl("enable", service, NULL, true);
-        if (run_launchctl("bootstrap", domain, plist_path, false) != 0) {
-            fprintf(stderr, "[-] Could not start LaunchAgent at %s\n", plist_path);
-            return 1;
+        if (run_launchctl("kickstart", "-k", service, true) != 0) {
+            (void)run_launchctl("bootout", service, NULL, true);
+            (void)run_launchctl("enable", service, NULL, true);
+            if (run_launchctl("bootstrap", domain, plist_path, false) != 0) {
+                fprintf(stderr, "[-] Could not start LaunchAgent at %s\n", plist_path);
+                return 1;
+            }
+            (void)run_launchctl("kickstart", "-k", service, true);
         }
 
         ipc_client_t test_c;
@@ -2142,6 +2150,7 @@ static int cmd_stop(void)
     char target[128];
     snprintf(target, sizeof(target), "gui/%u/io.github.openlogi.agent", (unsigned)getuid());
     if (run_launchctl("print", target, NULL, true) == 0) {
+        (void)run_launchctl("disable", target, NULL, true);
         if (run_launchctl("bootout", target, NULL, true) == 0) {
             service_stopped = true;
         }
@@ -2251,10 +2260,12 @@ static int cmd_uninstall(int argc, char **argv)
 #ifdef __APPLE__
         char target[128];
         snprintf(target, sizeof(target), "gui/%u/io.github.openlogi.agent", (unsigned)getuid());
-        if (run_launchctl("print", target, NULL, true) == 0 &&
-            run_launchctl("bootout", target, NULL, false) != 0) {
-            fprintf(stderr, "[-] Could not stop the login service. Installation retained.\n");
-            return 1;
+        if (run_launchctl("print", target, NULL, true) == 0) {
+            (void)run_launchctl("disable", target, NULL, true);
+            if (run_launchctl("bootout", target, NULL, false) != 0) {
+                fprintf(stderr, "[-] Could not stop the login service. Installation retained.\n");
+                return 1;
+            }
         }
 #else
         if (system("systemctl --user disable --now openlogid.service") != 0) {

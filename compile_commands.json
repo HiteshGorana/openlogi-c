@@ -63,6 +63,23 @@
       "-Ivendor/yyjson",
       "-Ivendor/tomlc99",
       "-c",
+      "src/core/action_job.c"
+    ],
+    "file": "src/core/action_job.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
       "src/core/action_queue.c"
     ],
     "file": "src/core/action_queue.c"
@@ -165,6 +182,23 @@
       "-Ivendor/yyjson",
       "-Ivendor/tomlc99",
       "-c",
+      "src/core/daemon_safety.c"
+    ],
+    "file": "src/core/daemon_safety.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
       "src/core/daemon_state.c"
     ],
     "file": "src/core/daemon_state.c"
@@ -236,6 +270,23 @@
       "src/core/hires_wheel.c"
     ],
     "file": "src/core/hires_wheel.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/core/input_runtime.c"
+    ],
+    "file": "src/core/input_runtime.c"
   },
   {
     "directory": "/Users/hitesh/Documents/openlogi-c",
@@ -678,6 +729,23 @@
       "tests/test_config.c"
     ],
     "file": "tests/test_config.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "tests/test_device_ownership.c"
+    ],
+    "file": "tests/test_device_ownership.c"
   },
   {
     "directory": "/Users/hitesh/Documents/openlogi-c",

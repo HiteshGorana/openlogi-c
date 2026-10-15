@@ -156,6 +156,11 @@ static bool open_target(const char *target, bool reveal)
 
 static int launchctl(macos_setup_t *setup, const char *verb, bool service, const char *path)
 {
+    if (strcmp(verb, "kickstart") == 0) {
+        char *args[] = { (char *)"launchctl", (char *)"kickstart", (char *)"-k",
+                         setup->service, NULL };
+        return run_process("/bin/launchctl", args);
+    }
     char *args[] = { (char *)"launchctl", (char *)verb,
                      service ? setup->service : setup->domain, (char *)path, NULL };
     return run_process("/bin/launchctl", args);
@@ -285,10 +290,12 @@ static bool stop_driver(macos_setup_t *setup)
     if (!single_instance_get_default_path(lock_path, sizeof(lock_path))) return false;
     int fd = open(lock_path, O_RDONLY | O_CLOEXEC);
     if (fd < 0 && errno != ENOENT) return false;
-    if (launchctl(setup, "print", true, NULL) == 0 &&
-        launchctl(setup, "bootout", true, NULL) != 0) {
-        if (fd >= 0) close(fd);
-        return false;
+    if (launchctl(setup, "print", true, NULL) == 0) {
+        (void)launchctl(setup, "disable", true, NULL);
+        if (launchctl(setup, "bootout", true, NULL) != 0) {
+            if (fd >= 0) close(fd);
+            return false;
+        }
     }
     if (fd < 0) return true;
     bool signaled = false;
@@ -378,8 +385,13 @@ static bool wait_for_driver(macos_setup_t *setup)
 static bool start_service(macos_setup_t *setup, const char *path)
 {
     if (!write_service(setup, path) || !stop_driver(setup)) return false;
-    if (launchctl(setup, "enable", true, NULL) != 0 ||
-        launchctl(setup, "bootstrap", false, path) != 0) return false;
+    (void)launchctl(setup, "enable", true, NULL);
+    if (launchctl(setup, "kickstart", true, NULL) != 0) {
+        (void)launchctl(setup, "bootout", true, NULL);
+        (void)launchctl(setup, "enable", true, NULL);
+        if (launchctl(setup, "bootstrap", false, path) != 0) return false;
+        (void)launchctl(setup, "kickstart", true, NULL);
+    }
     return wait_for_driver(setup);
 }
 
