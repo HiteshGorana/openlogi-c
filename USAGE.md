@@ -38,8 +38,14 @@ OpenLogi can run in two ways: as a **zero-terminal macOS application**, or as a 
 1. Download **`OpenLogi-arm64.dmg`** (or `OpenLogi-x86_64.dmg` for Intel Macs) from the [Releases page](https://github.com/HiteshGorana/openlogi-c/releases).
 2. Open the disk image and drag **`OpenLogi.app`** into `/Applications`.
 3. Double-click **`OpenLogi.app`**:
-   - **First Launch**: OpenLogi prompts for **Accessibility** and **Input Monitoring** permissions, opens System Settings directly to the privacy panes, and configures background autostart at login.
-   - **Subsequent Launches (While Running)**: Double-clicking OpenLogi pops up a fast status dialog displaying your mouse model and battery level, with options to **Keep Running**, **Stop OpenLogi**, or **Uninstall**.
+   - **First Launch**: OpenLogi guides you through **Input Monitoring**, then **Accessibility**. Enable OpenLogi in each pane, then return and click **Check Again**. If macOS asks to **Quit & Reopen**, accept; setup resumes. Use **More Options → Reveal OpenLogi** if the app is missing from the permission list.
+   - **Verification**: Setup checks the background driver's permissions, connected mouse, and active input hook before offering **Start at Login** or **Start Manually**. Manual startup lasts for the current login session and does not install a login item.
+   - **Finish Later**: Progress is saved. Opening the app again resumes unfinished setup even when the driver is already running.
+   - **Subsequent Launches (While Running)**: OpenLogi displays driver readiness, with **Keep Running**, **Stop OpenLogi**, and **More Options** for setup or uninstall. Missing driver permissions return you to setup.
+
+Ad-hoc builds may need permission approval again after an update or rebuild. If
+the toggles are enabled but access remains denied, remove the old entries and add
+the installed copy again. Always grant access to the copy in Applications.
 
 ### CLI & Service Mode
 If you prefer running via Terminal or Homebrew prefix (`~/.local/bin`):

@@ -16,6 +16,8 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <fcntl.h>
+#include <signal.h>
+#include <sys/wait.h>
 
 #define TEST_PASS(name) (void)(name)
 
@@ -425,6 +427,38 @@ static void test_ipc_server_file_watch(void)
     TEST_PASS("test_ipc_server_file_watch");
 }
 
+static void test_client_survives_daemon_disconnect(void)
+{
+    /* A socket which is closed between connect and the permission status request
+     * must return failure, not terminate the setup app with SIGPIPE. */
+    char path[100];
+    snprintf(path, sizeof(path), "/tmp/openlogi-disconnect-%d.sock", (int)getpid());
+    int server = socket(AF_UNIX, SOCK_STREAM, 0);
+    assert(server >= 0);
+    struct sockaddr_un addr = { 0 };
+    addr.sun_family = AF_UNIX;
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
+    assert(bind(server, (struct sockaddr *)&addr, sizeof(addr)) == 0);
+    assert(listen(server, 1) == 0);
+    ipc_client_t client;
+    assert(ipc_client_connect(path, &client));
+    assert(shutdown(client.fd, SHUT_RDWR) == 0);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        signal(SIGPIPE, SIG_DFL);
+        char *reply = ipc_client_call_raw(&client, "openlogi.get_status", "{}");
+        if (reply) { free(reply); _exit(1); }
+        _exit(0);
+    }
+    int status;
+    assert(waitpid(child, &status, 0) == child);
+    ipc_client_close(&client);
+    close(server);
+    unlink(path);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
 int main(void)
 {
     test_suite_begin(&g_suite, "test_ipc_server", "JSON-RPC 2.0 UNIX Domain Socket Server");
@@ -436,6 +470,7 @@ int main(void)
     TEST_CASE_RUN(g_suite, test_socket_server_end_to_end);
     TEST_CASE_RUN(g_suite, test_ipc_client_large_payload);
     TEST_CASE_RUN(g_suite, test_ipc_server_file_watch);
+    TEST_CASE_RUN(g_suite, test_client_survives_daemon_disconnect);
 
     test_suite_end(&g_suite);
     return (g_suite.failed == 0) ? 0 : 1;

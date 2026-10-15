@@ -11,6 +11,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <poll.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 
@@ -29,6 +30,19 @@ bool ipc_client_connect(const char *socket_path, ipc_client_t *out_client)
 
     int sock = socket(AF_UNIX, SOCK_STREAM, 0);
     if (sock < 0) return false;
+    int flags = fcntl(sock, F_GETFD);
+    if (flags < 0 || fcntl(sock, F_SETFD, flags | FD_CLOEXEC) != 0) {
+        close(sock);
+        return false;
+    }
+#ifdef SO_NOSIGPIPE
+    /* Permission approval can restart the daemon between connect and write. */
+    int no_sigpipe = 1;
+    if (setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe)) != 0) {
+        close(sock);
+        return false;
+    }
+#endif
 
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
@@ -126,7 +140,11 @@ char *ipc_client_call_raw(ipc_client_t *client, const char *method, const char *
         buf = heap_buf;
     }
 
-    ssize_t written = write(client->fd, buf, (size_t)req_len);
+#ifdef MSG_NOSIGNAL
+    ssize_t written = send(client->fd, buf, (size_t)req_len, MSG_NOSIGNAL);
+#else
+    ssize_t written = send(client->fd, buf, (size_t)req_len, 0);
+#endif
     if (heap_buf) free(heap_buf);
     if (written != req_len) return NULL;
 

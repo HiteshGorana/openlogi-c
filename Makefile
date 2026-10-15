@@ -44,6 +44,7 @@ BINDIR ?= $(PREFIX)/bin
 
 BUILD_DIR ?= build
 BIN_DIR ?= bin
+CODE_SIGN_IDENTITY ?= -
 
 UNAME_S := $(shell uname -s)
 
@@ -53,7 +54,7 @@ SRC_CORE = src/core/signals.c src/core/gesture.c src/core/config.c src/core/conf
            src/core/device_reapply.c src/core/dpi_cycle.c src/core/armed_session.c \
            src/core/scroll_pipeline.c src/core/capture_plan.c src/core/spaces_shortcuts.c \
            src/core/hires_wheel.c src/core/tool_path.c src/core/action_queue.c \
-           src/core/daemon_state.c
+           src/core/daemon_state.c src/core/onboarding.c
 SRC_IPC = src/ipc/ipc_server.c src/ipc/ipc_client.c
 SRC_PLATFORM =
 SRC_HOOK =
@@ -61,7 +62,7 @@ SRC_INJECT =
 LDFLAGS = -pthread
 
 ifeq ($(UNAME_S),Darwin)
-    SRC_PLATFORM += src/platform/macos/hid_iokit.c src/platform/macos/app_watch.c
+    SRC_PLATFORM += src/platform/macos/hid_iokit.c src/platform/macos/app_watch.c src/platform/macos/onboarding_macos.c
     SRC_HOOK += src/hook/hook_macos.c
     SRC_INJECT += src/inject/inject_macos.c
     LDFLAGS += -framework IOKit -framework CoreFoundation -framework ApplicationServices -framework AppKit
@@ -102,7 +103,7 @@ TEST_BINS = $(BIN_DIR)/test_hidpp_packet \
             $(BIN_DIR)/test_hires_wheel_curve \
             $(BIN_DIR)/test_actions \
             $(BIN_DIR)/test_action_queue \
-            $(BIN_DIR)/test_lightweight_standby
+            $(BIN_DIR)/test_lightweight_standby $(BIN_DIR)/test_onboarding
 
 TOOLS = $(BIN_DIR)/openlogi $(BIN_DIR)/openlogid $(BIN_DIR)/openlogictl $(BIN_DIR)/openlogi_discover
 
@@ -120,7 +121,8 @@ ifeq ($(UNAME_S),Darwin)
 	@ln -sf openlogi $(BIN_DIR)/OpenLogi.app/Contents/MacOS/openlogi_discover
 	@cp -f packaging/macos/Info.plist $(BIN_DIR)/OpenLogi.app/Contents/Info.plist
 	@if [ -f packaging/macos/AppIcon.icns ]; then cp -f packaging/macos/AppIcon.icns $(BIN_DIR)/OpenLogi.app/Contents/Resources/AppIcon.icns; fi
-	@codesign --force --deep -s - --identifier io.github.openlogi.agent $(BIN_DIR)/OpenLogi.app 2>/dev/null || true
+	@codesign --force --sign "$(CODE_SIGN_IDENTITY)" --identifier io.github.openlogi.agent "$(BIN_DIR)/OpenLogi.app"
+	@codesign --verify --strict "$(BIN_DIR)/OpenLogi.app"
 	@echo "[+] Successfully created $(BIN_DIR)/OpenLogi.app"
 endif
 
@@ -229,6 +231,10 @@ $(BIN_DIR)/test_action_queue: tests/test_action_queue.c $(CORE_OBJS)
 $(BIN_DIR)/test_lightweight_standby: tests/test_lightweight_standby.c $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
+
+$(BIN_DIR)/test_onboarding: tests/test_onboarding.c $(BUILD_DIR)/src/core/onboarding.o
+	@mkdir -p $(BIN_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
 
 $(BIN_DIR)/openlogi: $(BUILD_DIR)/src/cli/openlogi.o $(BUILD_DIR)/src/daemon/main.o $(BUILD_DIR)/src/cli/openlogictl.o $(BUILD_DIR)/src/cli/openlogi_discover.o $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)

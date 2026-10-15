@@ -55,7 +55,18 @@ Alternatively, use `~/.local/bin/openlogi` directly. Archives are also available
 
 ### 2. Grant permissions
 
-Run the automated diagnostic wizard to verify your environment and authorize permissions:
+For Finder installs, move **OpenLogi.app** to **Applications** and open that copy.
+Setup guides you through Input Monitoring and Accessibility one at a time. After
+enabling each permission, return to OpenLogi and click **Check Again**. Accept
+**Quit & Reopen** if macOS offers it; setup resumes even if the driver is already
+running. **More Options → Reveal OpenLogi** shows the exact copy to add when it is
+missing from System Settings.
+
+Setup verifies the background driver's permissions, connected mouse, and input
+hook before finishing. **Start Manually** runs it for the current login session
+without installing a login item. **Finish Later** preserves setup progress.
+
+For Terminal installs, run the diagnostic wizard:
 
 ```sh
 openlogi doctor
@@ -65,7 +76,12 @@ Alternatively, open **System Settings → Privacy & Security**:
 - Under **Accessibility**, toggle ON **OpenLogi** (or drag `/Applications/OpenLogi.app` from Finder).
 - Under **Input Monitoring**, toggle ON **OpenLogi**.
 
-OpenLogi installs as `/Applications/OpenLogi.app` with bundle ID `io.github.openlogi.agent`, so macOS retains your permissions across updates and rebuilds.
+OpenLogi uses bundle ID `io.github.openlogi.agent`. The default build is ad-hoc
+signed, so rebuilding or updating can require granting permissions again; the
+bundle ID alone does not preserve authorization. If an old entry stays enabled
+but OpenLogi reports denied access, remove that entry and add the installed copy
+again. Distribution builds can use `make app CODE_SIGN_IDENTITY="Developer ID Application: …"`
+with a consistent signing identity. See [Apple's code-signing requirements](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements).
 
 ### 3. Create your bindings
 

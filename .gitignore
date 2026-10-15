@@ -4,3 +4,4 @@ build-cmake/
 dist/
 *.o
 *.a
+.DS_Store

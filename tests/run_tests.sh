@@ -37,14 +37,14 @@ if [ "$1" = "-v" ] || [ "$1" = "--verbose" ] || [ "$1" = "1" ] || [ "$VERBOSE" =
     VERBOSE=1
 fi
 
-TOTAL_SUITES=21
+TOTAL_SUITES=22
 PASSED_SUITES=0
 FAILED_SUITES=0
 TOTAL_TESTS=0
 
 printf "\n%b================================================================================%b\n" "$C_CYAN" "$C_RESET"
 printf "%b                     OpenLogi Pure C Test Suite Runner%b\n" "$C_BOLD" "$C_RESET"
-printf "          %b21 Test Suites  •  114 Test Cases  •  AddressSanitizer Clean%b\n" "$C_GRAY" "$C_RESET"
+printf "          %b22 Test Suites  •  Unit and regression checks%b\n" "$C_GRAY" "$C_RESET"
 printf "%b================================================================================%b\n\n" "$C_CYAN" "$C_RESET"
 
 run_suite() {
@@ -95,7 +95,7 @@ run_suite 2  test_device_probe              5 "Hardware Probing, Battery, DPI & 
 run_suite 3  test_diversion_and_hook        6 "ReprogControls 0x1B04 Diversion & Event Hooks"
 run_suite 4  test_gesture_and_inject        6 "Gesture Swipe Accumulator & Native Injection"
 run_suite 5  test_config                    7 "TOML Schema Parser, Profile Resolution & Watchers"
-run_suite 6  test_ipc_server                7 "JSON-RPC 2.0 UNIX Domain Socket Server"
+run_suite 6  test_ipc_server                8 "JSON-RPC 2.0 UNIX Domain Socket Server"
 run_suite 7  test_cli                       5 "openlogictl CLI Client & Autostart Management"
 run_suite 8  test_single_instance           2 "Single-Instance Flock Process Lock"
 run_suite 9  test_button_runtime            7 "Button Press State Machine & Lifecycle"
@@ -111,6 +111,7 @@ run_suite 18 test_hires_wheel_curve         4 "HID++ 0x2121 Hi-Res Wheel & 0x211
 run_suite 19 test_actions                   6 "Complete 53-Action Catalog & Workflow Engine"
 run_suite 20 test_action_queue              4 "Asynchronous Non-Blocking Action Queue"
 run_suite 21 test_lightweight_standby        7 "Lightweight Standby Transitions & Safety Invariants"
+run_suite 22 test_onboarding                 9 "Resumable Setup & Permission Verification"
 
 printf "\n%b================================================================================%b\n" "$C_CYAN" "$C_RESET"
 if [ $FAILED_SUITES -eq 0 ]; then

@@ -6,7 +6,7 @@ case "$architecture" in arm64|x86_64) ;; *) printf 'Unsupported architecture: %s
 mkdir -p dist
 
 # strip changes the Mach-O contents, so sign the final binary afterwards.
-codesign --force --sign - --identifier "io.github.openlogi" "bin/openlogi"
+codesign --force --sign "${CODE_SIGN_IDENTITY:--}" --identifier "io.github.openlogi.agent" "bin/openlogi"
 codesign --verify --strict "bin/openlogi"
 xcrun lipo "bin/openlogi" -verify_arch "$architecture"
 
