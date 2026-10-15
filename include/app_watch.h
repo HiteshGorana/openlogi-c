@@ -25,6 +25,15 @@ typedef void (*app_watch_cb_t)(const char *app_id, void *user_data);
 bool app_watch_get_frontmost(char *out_app_id, size_t max_len);
 
 /**
+ * @brief Get the cached frontmost application bundle identifier without making blocking IPC calls.
+ * Safe to call from high-priority event tap callbacks.
+ * @param out_app_id Buffer to receive the bundle ID or process name.
+ * @param max_len Size of buffer.
+ * @return true if a cached app ID was found, false otherwise.
+ */
+bool app_watch_get_cached(char *out_app_id, size_t max_len);
+
+/**
  * @brief Start monitoring frontmost application changes.
  * Initializes foreground application tracking and invokes callback with initial app.
  * @param callback Callback to invoke on change.

@@ -1315,11 +1315,27 @@ static int cmd_autostart(int argc, char **argv)
     } else if (strcmp(action, "restart") == 0) {
         cmd_stop();
         usleep(200000);
-        char domain[64];
+        if (access(plist_path, R_OK) != 0) {
+            char *enable_args[] = { (char *)"enable", NULL };
+            return cmd_autostart(1, enable_args);
+        }
+        char domain[64], service[128];
         snprintf(domain, sizeof(domain), "gui/%u", (unsigned)getuid());
+        snprintf(service, sizeof(service), "%s/io.github.openlogi.agent", domain);
+        (void)run_launchctl("bootout", service, NULL, true);
+        (void)run_launchctl("enable", service, NULL, true);
         if (run_launchctl("bootstrap", domain, plist_path, false) != 0) {
             fprintf(stderr, "[-] Could not restart LaunchAgent at %s\n", plist_path);
             return 1;
+        }
+
+        ipc_client_t test_c;
+        for (int i = 0; i < 20; i++) {
+            usleep(50000);
+            if (ipc_client_connect(NULL, &test_c)) {
+                ipc_client_close(&test_c);
+                break;
+            }
         }
 
         if (g_json_output) {
@@ -1333,11 +1349,27 @@ static int cmd_autostart(int argc, char **argv)
         }
         return 0;
     } else if (strcmp(action, "start") == 0) {
-        char domain[64];
+        if (access(plist_path, R_OK) != 0) {
+            char *enable_args[] = { (char *)"enable", NULL };
+            return cmd_autostart(1, enable_args);
+        }
+        char domain[64], service[128];
         snprintf(domain, sizeof(domain), "gui/%u", (unsigned)getuid());
+        snprintf(service, sizeof(service), "%s/io.github.openlogi.agent", domain);
+        (void)run_launchctl("bootout", service, NULL, true);
+        (void)run_launchctl("enable", service, NULL, true);
         if (run_launchctl("bootstrap", domain, plist_path, false) != 0) {
             fprintf(stderr, "[-] Could not start LaunchAgent at %s\n", plist_path);
             return 1;
+        }
+
+        ipc_client_t test_c;
+        for (int i = 0; i < 20; i++) {
+            usleep(50000);
+            if (ipc_client_connect(NULL, &test_c)) {
+                ipc_client_close(&test_c);
+                break;
+            }
         }
 
         if (g_json_output) {
@@ -2323,6 +2355,9 @@ int ctl_main(int argc, char **argv)
         return cmd_uninstall(sub_argc, sub_argv);
     } else if (strcmp(cmd, "stop") == 0) {
         return cmd_stop();
+    } else if (strcmp(cmd, "start") == 0) {
+        char *args[] = { (char *)"start", NULL };
+        return cmd_autostart(1, args);
     } else if (strcmp(cmd, "restart") == 0) {
         char *args[] = { (char *)"restart", NULL };
         return cmd_autostart(1, args);

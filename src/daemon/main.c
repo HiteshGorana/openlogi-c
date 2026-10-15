@@ -160,7 +160,7 @@ static void on_button_runtime_event(const button_runtime_event_t *ev, void *user
     if (ev->type == BUTTON_EVT_TRIGGERED) {
         config_button_id_t btn_id = (config_button_id_t)ev->press.button_id;
         char front_app[256] = { 0 };
-        app_watch_get_frontmost(front_app, sizeof(front_app));
+        app_watch_get_cached(front_app, sizeof(front_app));
 
         const config_button_binding_t *binding = config_resolve_binding(
             &ctx->config, NULL, front_app, btn_id
@@ -183,7 +183,7 @@ static void on_button_runtime_event(const button_runtime_event_t *ev, void *user
 static void daemon_dispatch_gesture(openlogi_daemon_ctx_t *ctx, config_button_id_t btn_id, gesture_direction_t dir)
 {
     char front_app[256] = { 0 };
-    app_watch_get_frontmost(front_app, sizeof(front_app));
+    app_watch_get_cached(front_app, sizeof(front_app));
 
     const config_button_binding_t *binding = config_resolve_binding(
         &ctx->config, NULL, front_app, btn_id
@@ -276,7 +276,7 @@ static hook_action_t on_hook_event(const hook_event_t *event, void *user_data)
 
     if (btn_id != CONFIG_BUTTON_UNKNOWN) {
         char front_app[256] = { 0 };
-        app_watch_get_frontmost(front_app, sizeof(front_app));
+        app_watch_get_cached(front_app, sizeof(front_app));
 
         const config_button_binding_t *binding = config_resolve_binding(
             &g_daemon_ctx.config, NULL, front_app, btn_id

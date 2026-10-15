@@ -158,8 +158,6 @@ static void run_alert(const char *title, const char *msg,
     SEL windowSel = sel_registerName("window");
     id alertWindow = ((id (*)(id, SEL))objc_msgSend)(alert, windowSel);
     if (alertWindow) {
-        SEL setLevelSel = sel_registerName("setLevel:");
-        ((void (*)(id, SEL, long))objc_msgSend)(alertWindow, setLevelSel, 8);
         SEL centerSel = sel_registerName("center");
         ((void (*)(id, SEL))objc_msgSend)(alertWindow, centerSel);
     }
@@ -354,19 +352,41 @@ static bool ensure_daemon_running(const char *arg0)
         return true;
     }
 
-    char bin_path[1024] = { 0 };
-    get_canonical_bin_path(arg0, bin_path, sizeof(bin_path));
-    if (!bin_path[0]) return false;
+    const char *home = getenv("HOME");
+    char plist_path[512] = { 0 };
+    if (home) {
+        snprintf(plist_path, sizeof(plist_path), "%s/Library/LaunchAgents/io.github.openlogi.agent.plist", home);
+    }
 
-    char spawn_cmd[1200];
-    snprintf(spawn_cmd, sizeof(spawn_cmd), "\"%s\" daemon -d 2>/dev/null &", bin_path);
-    (void)system(spawn_cmd);
+    if (plist_path[0] && access(plist_path, R_OK) == 0) {
+        char boot_cmd[600];
+        snprintf(boot_cmd, sizeof(boot_cmd), "/bin/launchctl bootstrap gui/%u \"%s\" 2>/dev/null", (unsigned)getuid(), plist_path);
+        (void)system(boot_cmd);
+    } else {
+        macos_configure_autostart(arg0, true);
+    }
 
-    for (int i = 0; i < 20; i++) {
+    for (int i = 0; i < 25; i++) {
         usleep(100000);
         if (ipc_client_connect(NULL, &client)) {
             ipc_client_close(&client);
             return true;
+        }
+    }
+
+    /* Fallback: direct spawn */
+    char bin_path[1024] = { 0 };
+    get_canonical_bin_path(arg0, bin_path, sizeof(bin_path));
+    if (bin_path[0]) {
+        char spawn_cmd[1200];
+        snprintf(spawn_cmd, sizeof(spawn_cmd), "\"%s\" daemon -d 2>/dev/null &", bin_path);
+        (void)system(spawn_cmd);
+        for (int i = 0; i < 20; i++) {
+            usleep(100000);
+            if (ipc_client_connect(NULL, &client)) {
+                ipc_client_close(&client);
+                return true;
+            }
         }
     }
     return false;
@@ -523,8 +543,67 @@ static int handle_app_bundle_launch(int argc, char **argv)
         run_alert("OpenLogi", "OpenLogi is currently stopped.\n\nWhat would you like to do?",
                   "Start OpenLogi", "Re-run Setup", "Quit", btn, sizeof(btn));
         if (strcmp(btn, "Start OpenLogi") == 0) {
-            ensure_daemon_running(argv[0]);
-            run_alert("OpenLogi Started", "OpenLogi driver is now running silently in the background.", "OK", NULL, NULL, NULL, 0);
+            bool started = ensure_daemon_running(argv[0]);
+            if (!started) {
+                run_alert("Failed to Start", "OpenLogi could not start the background service. Please try running 'openlogi service enable' in Terminal.", "OK", NULL, NULL, NULL, 0);
+                return 1;
+            }
+
+            /* Query daemon health and permissions */
+            bool has_acc = false, has_inp = false;
+            char dev_name[256] = { 0 };
+            uint32_t dev_batt = 0;
+            bool found_dev = false;
+            ipc_client_t client;
+            if (ipc_client_connect(NULL, &client)) {
+                yyjson_doc *st = ipc_client_call(&client, "openlogi.get_status", "{}");
+                if (st) {
+                    yyjson_val *res = yyjson_obj_get(yyjson_doc_get_root(st), "result");
+                    yyjson_val *perms = yyjson_obj_get(res, "permissions");
+                    if (perms) {
+                        has_acc = yyjson_get_bool(yyjson_obj_get(perms, "accessibility"));
+                        has_inp = yyjson_get_bool(yyjson_obj_get(perms, "input_monitoring"));
+                    }
+                    yyjson_doc_free(st);
+                }
+                yyjson_doc *inv = ipc_client_call(&client, "openlogi.get_inventory", "{}");
+                if (inv) {
+                    yyjson_val *res = yyjson_obj_get(yyjson_doc_get_root(inv), "result");
+                    yyjson_val *devs = yyjson_obj_get(res, "devices");
+                    if (yyjson_is_arr(devs) && yyjson_arr_size(devs) > 0) {
+                        yyjson_val *d0 = yyjson_arr_get(devs, 0);
+                        const char *pn = yyjson_get_str(yyjson_obj_get(d0, "product_name"));
+                        if (pn) strncpy(dev_name, pn, sizeof(dev_name) - 1);
+                        dev_batt = (uint32_t)yyjson_get_uint(yyjson_obj_get(d0, "battery_percent"));
+                        found_dev = true;
+                    }
+                    yyjson_doc_free(inv);
+                }
+                ipc_client_close(&client);
+            }
+
+            if (!has_acc || !has_inp) {
+                char pbtn[64] = { 0 };
+                run_alert("Permissions Required",
+                          "OpenLogi service started, but macOS Accessibility or Input Monitoring permissions are missing in System Settings.\n\nWithout these permissions, mouse buttons and gestures cannot be intercepted.",
+                          "Open System Settings", "OK", NULL, pbtn, sizeof(pbtn));
+                if (strcmp(pbtn, "Open System Settings") == 0) {
+                    (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility\" 2>/dev/null");
+                }
+                return 0;
+            }
+
+            if (found_dev) {
+                char msg[512];
+                snprintf(msg, sizeof(msg),
+                         "OpenLogi is active and controlling your %s (Battery: %u%%).",
+                         dev_name[0] ? dev_name : "Logitech Mouse", (unsigned)dev_batt);
+                run_alert("OpenLogi is Active", msg, "OK", NULL, NULL, NULL, 0);
+            } else {
+                run_alert("OpenLogi is Active",
+                          "OpenLogi is running in the background. No Logitech mouse is currently connected.\n\nIt will automatically control your mouse as soon as it connects.",
+                          "OK", NULL, NULL, NULL, 0);
+            }
             return 0;
         } else if (strcmp(btn, "Re-run Setup") == 0) {
             completed = false;
@@ -575,6 +654,10 @@ static int handle_app_bundle_launch(int argc, char **argv)
             CGRequestListenEventAccess();
             (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent\" 2>/dev/null");
             opened_settings = true;
+            for (int w = 0; w < 30; w++) {
+                usleep(500000);
+                if (IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted) break;
+            }
         }
 
         if (IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted) {
@@ -619,6 +702,10 @@ static int handle_app_bundle_launch(int argc, char **argv)
             }
             (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility\" 2>/dev/null");
             opened_settings = true;
+            for (int w = 0; w < 30; w++) {
+                usleep(500000);
+                if (AXIsProcessTrusted()) break;
+            }
         }
 
         if (AXIsProcessTrusted()) {
@@ -780,7 +867,7 @@ int main(int argc, char **argv)
         }
 
         /* Daemon subcommand: openlogi daemon [options] - strictly noninteractive! */
-        if (strcmp(first_arg, "daemon") == 0 || strcmp(first_arg, "serve") == 0 || strcmp(first_arg, "start") == 0) {
+        if (strcmp(first_arg, "daemon") == 0 || strcmp(first_arg, "serve") == 0) {
             return daemon_main(argc - 1, &argv[1]);
         }
 

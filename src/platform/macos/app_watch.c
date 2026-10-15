@@ -100,6 +100,21 @@ bool app_watch_get_frontmost(char *out_app_id, size_t max_len)
     return found;
 }
 
+bool app_watch_get_cached(char *out_app_id, size_t max_len)
+{
+    if (!out_app_id || max_len == 0) return false;
+    out_app_id[0] = '\0';
+    pthread_mutex_lock(&g_lock);
+    if (g_last_app[0] != '\0') {
+        strncpy(out_app_id, g_last_app, max_len - 1);
+        out_app_id[max_len - 1] = '\0';
+        pthread_mutex_unlock(&g_lock);
+        return true;
+    }
+    pthread_mutex_unlock(&g_lock);
+    return false;
+}
+
 void app_watch_tick(void)
 {
     pthread_mutex_lock(&g_lock);
@@ -179,6 +194,9 @@ bool app_watch_is_running(void)
 #include "app_watch.h"
 
 bool app_watch_get_frontmost(char *out_app_id, size_t max_len) {
+    (void)out_app_id; (void)max_len; return false;
+}
+bool app_watch_get_cached(char *out_app_id, size_t max_len) {
     (void)out_app_id; (void)max_len; return false;
 }
 bool app_watch_start(app_watch_cb_t callback, void *user_data) {
