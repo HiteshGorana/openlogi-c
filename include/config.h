@@ -105,6 +105,8 @@ void config_free(openlogi_config_t *cfg);
 /**
  * @brief Helper to resolve button action for a given device, foreground application, and button ID.
  */
+const config_device_t *config_resolve_device(const openlogi_config_t *cfg, const char *device_key);
+
 const config_button_binding_t *config_resolve_binding(
     const openlogi_config_t *cfg,
     const char *device_key,

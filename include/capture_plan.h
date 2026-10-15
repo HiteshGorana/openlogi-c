@@ -47,6 +47,11 @@ bool capture_spec_has_cid(const capture_spec_t *spec, uint16_t cid);
  * @brief Resolve hardware capture requirements from a device's configuration.
  */
 void capture_plan_resolve(const config_device_t *dev, capture_spec_t *out_spec);
+void capture_plan_resolve_for_app(const config_device_t *dev, const char *app, capture_spec_t *out_spec);
+typedef bool (*capture_write_fn)(void *context, uint16_t cid, bool divert, bool raw_xy);
+/* Updates confirmed state only on acknowledgement; failed additions roll back. */
+bool capture_plan_apply(capture_spec_t *applied, const capture_spec_t *desired,
+                        capture_write_fn write, void *context);
 
 /**
  * @brief Check if target specs differ, necessitating a firmware re-arm.

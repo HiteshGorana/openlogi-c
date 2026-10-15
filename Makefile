@@ -54,7 +54,7 @@ SRC_CORE = src/core/signals.c src/core/gesture.c src/core/config.c src/core/conf
            src/core/device_reapply.c src/core/dpi_cycle.c src/core/armed_session.c \
            src/core/scroll_pipeline.c src/core/capture_plan.c src/core/spaces_shortcuts.c \
            src/core/hires_wheel.c src/core/tool_path.c src/core/action_queue.c \
-           src/core/daemon_state.c src/core/onboarding.c
+           src/core/daemon_state.c src/core/onboarding.c src/core/input_runtime.c src/core/daemon_safety.c src/core/action_job.c
 SRC_IPC = src/ipc/ipc_server.c src/ipc/ipc_client.c
 SRC_PLATFORM =
 SRC_HOOK =

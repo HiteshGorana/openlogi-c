@@ -159,6 +159,10 @@ bool hidpp_reprog_set_reporting(
         return false;
     }
 
+    /* Reserve recovery capacity before changing firmware. A timed-out write may
+     * still have reached the device, so keep the reservation until restoration. */
+    if (divert && !hidpp_diversion_track(dev, device_index, feature_index, sw_id, cid)) return false;
+
     hidpp_v20_msg_t req;
     memset(&req, 0, sizeof(req));
     req.report_id = HIDPP_REPORT_LONG;
@@ -280,7 +284,7 @@ bool hidpp_reprog_decode_event(
  * Global Diversion Safety Registry
  * ========================================================================= */
 
-void hidpp_diversion_track(
+bool hidpp_diversion_track(
     hid_device_t *dev,
     uint8_t device_index,
     uint8_t feature_index,
@@ -293,7 +297,7 @@ void hidpp_diversion_track(
             g_diversions[i].device_index = device_index;
             g_diversions[i].feature_index = feature_index;
             g_diversions[i].sw_id = sw_id;
-            return;
+            return true;
         }
     }
 
@@ -309,9 +313,10 @@ void hidpp_diversion_track(
             if (i >= g_diversion_count) {
                 g_diversion_count = i + 1;
             }
-            return;
+            return true;
         }
     }
+    return false;
 }
 
 void hidpp_diversion_untrack(hid_device_t *dev, uint16_t cid)
@@ -349,8 +354,6 @@ void hidpp_diversion_teardown_all(void)
                 false, /* divert = false */
                 false  /* raw_xy = false */
             );
-            g_diversions[i].active = false;
         }
     }
-    g_diversion_count = 0;
 }

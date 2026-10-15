@@ -5,6 +5,7 @@
 
 #include "action_queue.h"
 #include "inject.h"
+#include "action_job.h"
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -28,6 +29,7 @@ static action_node_t *g_tail = NULL;
 static size_t g_queue_len = 0;
 static bool g_running = false;
 static bool g_busy = false;
+static bool g_joinable = false;
 
 static void free_node(action_node_t *node)
 {
@@ -37,6 +39,20 @@ static void free_node(action_node_t *node)
         node->action.u.workflow = NULL;
     }
     free(node);
+}
+
+static bool job_cancelled(void *context)
+{
+    (void)context;
+    pthread_mutex_lock(&g_lock);
+    bool cancelled = !g_running;
+    pthread_mutex_unlock(&g_lock);
+    return cancelled;
+}
+static void job_emit(void *context, const openlogi_action_t *action)
+{
+    (void)context;
+    inject_action(action);
 }
 
 static void *action_worker_main(void *arg)
@@ -68,7 +84,9 @@ static void *action_worker_main(void *arg)
         pthread_mutex_unlock(&g_lock);
 
         /* Execute action outside of queue lock to avoid stalling the queue */
-        inject_action(&node->action);
+        if (inject_get_dry_run()) inject_action(&node->action);
+        else if (!action_job_run(&node->action, job_cancelled, job_emit, NULL) && !job_cancelled(NULL))
+            fprintf(stderr, "[openlogid] Action failed or exceeded its execution deadline.\n");
 
         free_node(node);
     }
@@ -79,9 +97,10 @@ static void *action_worker_main(void *arg)
 bool action_queue_init(void)
 {
     pthread_mutex_lock(&g_lock);
-    if (g_running) {
+    if (g_joinable) {
+        bool running = g_running;
         pthread_mutex_unlock(&g_lock);
-        return true;
+        return running;
     }
 
     g_running = true;
@@ -98,6 +117,7 @@ bool action_queue_init(void)
         return false;
     }
 
+    g_joinable = true;
     pthread_mutex_unlock(&g_lock);
     return true;
 }
@@ -188,13 +208,32 @@ void action_queue_clear_pending(void)
     g_head = NULL;
     g_tail = NULL;
     g_queue_len = 0;
+    pthread_cond_broadcast(&g_idle_cond);
+    pthread_mutex_unlock(&g_lock);
+}
+
+void action_queue_cancel(void)
+{
+    pthread_mutex_lock(&g_lock);
+    g_running = false;
+    action_node_t *node = g_head;
+    while (node) {
+        action_node_t *next = node->next;
+        free_node(node);
+        node = next;
+    }
+    g_head = g_tail = NULL;
+    g_queue_len = 0;
+    pthread_cond_broadcast(&g_cond);
+    pthread_cond_broadcast(&g_idle_cond);
     pthread_mutex_unlock(&g_lock);
 }
 
 void action_queue_shutdown(void)
 {
+    action_queue_cancel();
     pthread_mutex_lock(&g_lock);
-    if (!g_running) {
+    if (!g_joinable) {
         pthread_mutex_unlock(&g_lock);
         return;
     }
@@ -216,5 +255,6 @@ void action_queue_shutdown(void)
     g_tail = NULL;
     g_queue_len = 0;
     g_busy = false;
+    g_joinable = false;
     pthread_mutex_unlock(&g_lock);
 }

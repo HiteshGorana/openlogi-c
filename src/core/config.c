@@ -163,7 +163,9 @@ static uint16_t macos_name_to_keycode(const char *name)
 
     /* Function keys F1 - F20 */
     if (lower[0] == 'f' && isdigit((unsigned char)lower[1])) {
-        int fnum = atoi(lower + 1);
+        char *end = NULL;
+        long fnum = strtol(lower + 1, &end, 10);
+        if (!end || *end) return 0xFFFF;
         switch (fnum) {
             case 1: return 0x7A;
             case 2: return 0x78;
@@ -213,6 +215,7 @@ static bool parse_shortcut(const char *str, openlogi_action_t *out_action)
     uint32_t modifiers = 0;
     uint16_t keycode = 0xFFFF;
     char buf[128];
+    if (strlen(str) >= sizeof(buf) || str[0] == '+' || str[strlen(str) - 1] == '+' || strstr(str, "++")) return false;
     strncpy(buf, str, sizeof(buf) - 1);
     buf[sizeof(buf) - 1] = '\0';
 
@@ -238,9 +241,8 @@ static bool parse_shortcut(const char *str, openlogi_action_t *out_action)
             modifiers |= MOD_SHIFT;
         } else {
             uint16_t kc = macos_name_to_keycode(token);
-            if (kc != 0xFFFF) {
-                keycode = kc;
-            }
+            if (kc == 0xFFFF || keycode != 0xFFFF) return false;
+            keycode = kc;
         }
         token = strtok_r(NULL, "+", &saveptr);
     }
@@ -517,13 +519,84 @@ bool action_from_string(const char *str, openlogi_action_t *out_action)
     return false;
 }
 
-static void parse_button_bindings_table(
+/* Parse into a private workflow, publishing only a fully validated sequence. */
+static bool parse_workflow(const toml_array_t *array, openlogi_action_t *action,
+                           const char *button, char *error, size_t error_size)
+{
+    int count = array ? toml_array_nelem(array) : 0;
+    if (count < 1 || count > MAX_WORKFLOW_STEPS) {
+        snprintf(error, error_size, "%s.Workflow: expected 1..%d steps", button, MAX_WORKFLOW_STEPS);
+        return false;
+    }
+    openlogi_workflow_t *workflow = calloc(1, sizeof(*workflow));
+    if (!workflow) {
+        snprintf(error, error_size, "%s.Workflow: allocation failed", button);
+        return false;
+    }
+    for (int i = 0; i < count; i++) {
+        const toml_table_t *table = toml_table_at(array, i);
+        const char *key = table ? toml_key_in(table, 0) : NULL;
+        workflow_step_t *step = &workflow->steps[i];
+        if (!key || toml_key_in(table, 1)) goto invalid;
+        if (strcmp(key, "Delay") == 0) {
+            toml_datum_t ms = toml_int_in(table, key);
+            const toml_table_t *legacy = toml_table_in(table, key);
+            if (legacy) {
+                const char *field = toml_key_in(legacy, 0);
+                if (!field || strcmp(field, "millis") || toml_key_in(legacy, 1)) goto invalid;
+                ms = toml_int_in(legacy, "millis");
+            }
+            if (!ms.ok || ms.u.i < 0 || ms.u.i > MAX_WORKFLOW_DELAY_MS) goto invalid;
+            step->type = WORKFLOW_STEP_DELAY;
+            step->u.delay_ms = (uint32_t)ms.u.i;
+        } else {
+            toml_datum_t value = toml_string_in(table, key);
+            if (!value.ok) goto invalid;
+            bool valid = false;
+            if (strcmp(key, "PressKey") == 0) {
+                openlogi_action_t shortcut = { 0 };
+                valid = parse_shortcut(value.u.s, &shortcut);
+                step->type = WORKFLOW_STEP_PRESS_KEY;
+                step->u.key.keycode = shortcut.u.key_combo.keycode;
+                step->u.key.modifiers = shortcut.u.key_combo.modifiers;
+            } else {
+                char *out = NULL;
+                size_t capacity = 0;
+                if (strcmp(key, "TypeText") == 0) {
+                    step->type = WORKFLOW_STEP_TYPE_TEXT;
+                    out = step->u.text; capacity = sizeof(step->u.text);
+                } else if (strcmp(key, "RunAppleScript") == 0) {
+                    step->type = WORKFLOW_STEP_APPLE_SCRIPT;
+                    out = step->u.script; capacity = sizeof(step->u.script);
+                } else if (strcmp(key, "RunShellCommand") == 0) {
+                    step->type = WORKFLOW_STEP_SHELL_CMD;
+                    out = step->u.cmd; capacity = sizeof(step->u.cmd);
+                }
+                valid = out && strlen(value.u.s) < capacity;
+                if (valid) memcpy(out, value.u.s, strlen(value.u.s) + 1);
+            }
+            free(value.u.s);
+            if (!valid) goto invalid;
+        }
+        continue;
+invalid:
+        snprintf(error, error_size, "%s.Workflow[%d]: invalid, ambiguous, or oversized step", button, i + 1);
+        free(workflow);
+        return false;
+    }
+    workflow->step_count = (size_t)count;
+    action->type = ACTION_WORKFLOW;
+    action->u.workflow = workflow;
+    return true;
+}
+
+static bool parse_button_bindings_table(
     const toml_table_t *bindings_tab,
     config_button_binding_t *out_bindings,
     size_t *out_count,
-    size_t max_count)
+    size_t max_count, char *error, size_t error_size)
 {
-    if (!bindings_tab || !out_bindings || !out_count) return;
+    if (!bindings_tab || !out_bindings || !out_count) return false;
 
     for (int i = 0; *out_count < max_count; i++) {
         const char *key_name = toml_key_in(bindings_tab, i);
@@ -548,6 +621,20 @@ static void parse_button_bindings_table(
         /* Case 2: Table value (Gesture directions or Parameterized action table) */
         const toml_table_t *sub_tab = toml_table_in(bindings_tab, key_name);
         if (sub_tab) {
+            /* Workflow is exclusive; don't let an earlier key hide malformed steps. */
+            bool has_workflow = false;
+            for (int k = 0; toml_key_in(sub_tab, k); k++)
+                if (strcmp(toml_key_in(sub_tab, k), "Workflow") == 0) has_workflow = true;
+            if (has_workflow) {
+                if (toml_key_in(sub_tab, 1)) {
+                    snprintf(error, error_size, "%s.Workflow: ambiguous action object", key_name);
+                    return false;
+                }
+                if (!parse_workflow(toml_array_in(sub_tab, "Workflow"), &binding->action,
+                                    key_name, error, error_size)) return false;
+                (*out_count)++;
+                continue;
+            }
             /* 1. CustomShortcut */
             toml_datum_t cs = toml_string_in(sub_tab, "CustomShortcut");
             if (cs.ok) {
@@ -629,64 +716,6 @@ static void parse_button_bindings_table(
                 continue;
             }
 
-            /* 8. Workflow */
-            const toml_array_t *wf_arr = toml_array_in(sub_tab, "Workflow");
-            if (wf_arr) {
-                binding->action.type = ACTION_WORKFLOW;
-                binding->action.u.workflow = calloc(1, sizeof(openlogi_workflow_t));
-                if (binding->action.u.workflow) {
-                    int n = toml_array_nelem(wf_arr);
-                    if (n > MAX_WORKFLOW_STEPS) n = MAX_WORKFLOW_STEPS;
-                    binding->action.u.workflow->step_count = (size_t)n;
-                    for (int s = 0; s < n; s++) {
-                        const toml_table_t *step_tab = toml_table_at(wf_arr, s);
-                        if (!step_tab) continue;
-                        workflow_step_t *st = &binding->action.u.workflow->steps[s];
-                        toml_datum_t pk = toml_string_in(step_tab, "PressKey");
-                        if (pk.ok) {
-                            st->type = WORKFLOW_STEP_PRESS_KEY;
-                            openlogi_action_t tmp_act;
-                            if (parse_shortcut(pk.u.s, &tmp_act)) {
-                                st->u.key.keycode = tmp_act.u.key_combo.keycode;
-                                st->u.key.modifiers = tmp_act.u.key_combo.modifiers;
-                            }
-                            free(pk.u.s);
-                            continue;
-                        }
-                        const toml_table_t *delay_tab = toml_table_in(step_tab, "Delay");
-                        if (delay_tab) {
-                            st->type = WORKFLOW_STEP_DELAY;
-                            toml_datum_t ms = toml_int_in(delay_tab, "millis");
-                            if (ms.ok) st->u.delay_ms = (uint32_t)ms.u.i;
-                            continue;
-                        }
-                        toml_datum_t txt = toml_string_in(step_tab, "TypeText");
-                        if (txt.ok) {
-                            st->type = WORKFLOW_STEP_TYPE_TEXT;
-                            strncpy(st->u.text, txt.u.s, sizeof(st->u.text) - 1);
-                            free(txt.u.s);
-                            continue;
-                        }
-                        toml_datum_t as_st = toml_string_in(step_tab, "RunAppleScript");
-                        if (as_st.ok) {
-                            st->type = WORKFLOW_STEP_APPLE_SCRIPT;
-                            strncpy(st->u.script, as_st.u.s, sizeof(st->u.script) - 1);
-                            free(as_st.u.s);
-                            continue;
-                        }
-                        toml_datum_t sh_st = toml_string_in(step_tab, "RunShellCommand");
-                        if (sh_st.ok) {
-                            st->type = WORKFLOW_STEP_SHELL_CMD;
-                            strncpy(st->u.cmd, sh_st.u.s, sizeof(st->u.cmd) - 1);
-                            free(sh_st.u.s);
-                            continue;
-                        }
-                    }
-                }
-                (*out_count)++;
-                continue;
-            }
-
             /* Check for short / long */
             toml_datum_t short_val = toml_string_in(sub_tab, "short");
             if (short_val.ok) {
@@ -714,6 +743,7 @@ static void parse_button_bindings_table(
             }
         }
     }
+    return true;
 }
 
 static void free_action(openlogi_action_t *action)
@@ -819,6 +849,8 @@ bool config_parse_string(
             memset(dev, 0, sizeof(*dev));
             strncpy(dev->device_key, dev_key, sizeof(dev->device_key) - 1);
             dev->enabled = true;
+            toml_datum_t enabled = toml_bool_in(dev_tab, "enabled");
+            if (enabled.ok) dev->enabled = enabled.u.b;
 
             toml_datum_t name = toml_string_in(dev_tab, "custom_name");
             if (name.ok) {
@@ -870,12 +902,12 @@ bool config_parse_string(
             /* Default bindings */
             const toml_table_t *bindings_tab = toml_table_in(dev_tab, "bindings");
             if (bindings_tab) {
-                parse_button_bindings_table(
+                if (!parse_button_bindings_table(
                     bindings_tab,
                     dev->default_profile.bindings,
                     &dev->default_profile.binding_count,
-                    OPENLOGI_MAX_BINDINGS
-                );
+                    OPENLOGI_MAX_BINDINGS, parse_err, sizeof(parse_err)
+                )) goto invalid_bindings;
             }
 
             /* Per-application bindings */
@@ -892,12 +924,12 @@ bool config_parse_string(
                     memset(prof, 0, sizeof(*prof));
                     strncpy(prof->app_id, app_key, sizeof(prof->app_id) - 1);
 
-                    parse_button_bindings_table(
+                    if (!parse_button_bindings_table(
                         app_bindings_tab,
                         prof->bindings,
                         &prof->binding_count,
-                        OPENLOGI_MAX_BINDINGS
-                    );
+                        OPENLOGI_MAX_BINDINGS, parse_err, sizeof(parse_err)
+                    )) goto invalid_bindings;
                 }
             }
         }
@@ -907,6 +939,12 @@ bool config_parse_string(
     *out_config = *tmp;
     free(tmp);
     return true;
+invalid_bindings:
+    if (errbuf && errbufsz) snprintf(errbuf, errbufsz, "%s", parse_err);
+    toml_free(root);
+    config_free(tmp);
+    free(tmp);
+    return false;
 }
 
 bool config_load_file(
@@ -952,6 +990,18 @@ bool config_load_file(
     return ok;
 }
 
+const config_device_t *config_resolve_device(const openlogi_config_t *cfg, const char *key)
+{
+    if (!cfg || !cfg->device_count) return NULL;
+    if (key && key[0]) {
+        for (size_t i = 0; i < cfg->device_count; i++)
+            if (strcmp(cfg->devices[i].device_key, key) == 0) return &cfg->devices[i];
+    }
+    for (size_t i = 0; i < cfg->device_count; i++)
+        if (strcmp(cfg->devices[i].device_key, "default") == 0) return &cfg->devices[i];
+    return key && key[0] ? NULL : &cfg->devices[0];
+}
+
 const config_button_binding_t *config_resolve_binding(
     const openlogi_config_t *cfg,
     const char *device_key,
@@ -960,22 +1010,8 @@ const config_button_binding_t *config_resolve_binding(
 {
     if (!cfg || cfg->device_count == 0) return NULL;
 
-    const config_device_t *matched_dev = NULL;
-
-    /* 1. Try finding device by device_key */
-    if (device_key && device_key[0] != '\0') {
-        for (size_t i = 0; i < cfg->device_count; i++) {
-            if (strcmp(cfg->devices[i].device_key, device_key) == 0) {
-                matched_dev = &cfg->devices[i];
-                break;
-            }
-        }
-    }
-
-    /* Fallback to first device */
-    if (!matched_dev) {
-        matched_dev = &cfg->devices[0];
-    }
+    const config_device_t *matched_dev = config_resolve_device(cfg, device_key);
+    if (!matched_dev || !matched_dev->enabled) return NULL;
 
     /* 2. Check per-application profile if app_id provided */
     if (current_app_id && current_app_id[0] != '\0') {

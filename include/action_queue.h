@@ -55,6 +55,8 @@ void action_queue_clear_pending(void);
  * @brief Stop worker thread and free all pending actions in queue.
  */
 void action_queue_shutdown(void);
+/* Stop accepting work and request cancellation without joining the worker. */
+void action_queue_cancel(void);
 
 #ifdef __cplusplus
 }

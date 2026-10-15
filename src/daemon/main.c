@@ -15,7 +15,8 @@
 #include "hidpp_reprog.h"
 #include "single_instance.h"
 #include "subcommands.h"
-#include "button_runtime.h"
+#include "input_runtime.h"
+#include "daemon_safety.h"
 #include "capture_plan.h"
 #include "action_queue.h"
 #include "scroll_pipeline.h"
@@ -46,7 +47,7 @@ static char g_socket_file[512] = { 0 };
 static char g_lock_file[512] = { 0 };
 static char g_session_file[512] = { 0 };
 static bool g_verbose = false;
-static button_runtime_t g_button_rt;
+static input_runtime_t g_hook_input;
 static volatile bool g_pending_hotplug_probe = false;
 static volatile bool g_pending_reconcile = false;
 
@@ -60,7 +61,8 @@ static uint64_t daemon_get_time_ms(void)
 static bool daemon_reload_config(openlogi_daemon_ctx_t *ctx);
 static void daemon_probe_hardware(openlogi_daemon_ctx_t *ctx);
 static size_t count_online_usable_devices(const openlogi_daemon_ctx_t *ctx);
-static void daemon_apply_diversion(openlogi_daemon_ctx_t *ctx);
+static bool daemon_apply_diversion(openlogi_daemon_ctx_t *ctx);
+static void daemon_cancel_input(void);
 static void daemon_undivert_all(void);
 static void daemon_reconcile_runtime_state(openlogi_daemon_ctx_t *ctx);
 
@@ -81,14 +83,13 @@ static void on_app_changed(const char *app_id, void *user_data)
     if (g_verbose) {
         printf("[openlogid] Active foreground app: %s\n", app_id);
     }
-    button_runtime_cancel_all(&g_button_rt, BUTTON_END_CANCELED_INVALIDATED);
+    /* Existing presses retain their selected action; capture follows the new app. */
+    g_pending_reconcile = true;
     char payload[512];
     snprintf(payload, sizeof(payload), "{\"app_id\":\"%s\"}", app_id);
     ipc_server_broadcast_event("app_activated", payload);
 }
 
-static swipe_accumulator_t g_gesture_acc;
-static config_button_id_t g_active_gesture_btn = CONFIG_BUTTON_UNKNOWN;
 
 /* Forward declarations */
 static bool daemon_set_dpi(openlogi_daemon_ctx_t *ctx, const char *dev_key, uint16_t dpi);
@@ -146,86 +147,22 @@ static void daemon_dispatch_action(openlogi_daemon_ctx_t *ctx, const openlogi_ac
         if (g_verbose) {
             printf("[openlogid] Offloading blocking action to async worker\n");
         }
-        action_queue_enqueue(action);
+        if (!action_queue_enqueue(action))
+            ipc_server_broadcast_event("action_rejected", "{\"reason\":\"queue_full_or_stopping\"}");
     } else {
         inject_action(action);
     }
 }
 
-static void on_button_runtime_event(const button_runtime_event_t *ev, void *user_data)
+static void daemon_input_dispatch(void *context, config_button_id_t button,
+                                  gesture_direction_t direction, const openlogi_action_t *action)
 {
-    openlogi_daemon_ctx_t *ctx = (openlogi_daemon_ctx_t *)user_data;
-    if (!ctx || !ev) return;
-
-    if (ev->type == BUTTON_EVT_TRIGGERED) {
-        config_button_id_t btn_id = (config_button_id_t)ev->press.button_id;
-        char front_app[256] = { 0 };
-        app_watch_get_cached(front_app, sizeof(front_app));
-
-        const config_button_binding_t *binding = config_resolve_binding(
-            &ctx->config, NULL, front_app, btn_id
-        );
-
-        if (!binding) return;
-
-        const openlogi_action_t *to_run = &binding->action;
-        if (to_run && to_run->type != ACTION_NONE) {
-            char desc[128];
-            snprintf(desc, sizeof(desc), "Button %s [%s] (app: %s)",
-                     button_id_to_string(btn_id),
-                     ev->action_type == TRIGGER_ACTION_LONG_PRESS ? "LongPress" : "Click",
-                     front_app);
-            daemon_dispatch_action(ctx, to_run, desc);
-        }
-    }
-}
-
-static void daemon_dispatch_gesture(openlogi_daemon_ctx_t *ctx, config_button_id_t btn_id, gesture_direction_t dir)
-{
-    char front_app[256] = { 0 };
-    app_watch_get_cached(front_app, sizeof(front_app));
-
-    const config_button_binding_t *binding = config_resolve_binding(
-        &ctx->config, NULL, front_app, btn_id
-    );
-
-    if (!binding) return;
-
-    const openlogi_action_t *to_run = NULL;
-    const char *dir_name = gesture_direction_name(dir);
-
-    switch (dir) {
-        case GESTURE_DIR_UP:
-            to_run = (binding->gesture_up.type != ACTION_NONE) ? &binding->gesture_up : &binding->action;
-            break;
-        case GESTURE_DIR_DOWN:
-            to_run = (binding->gesture_down.type != ACTION_NONE) ? &binding->gesture_down : &binding->action;
-            break;
-        case GESTURE_DIR_LEFT:
-            to_run = (binding->gesture_left.type != ACTION_NONE) ? &binding->gesture_left : &binding->action;
-            break;
-        case GESTURE_DIR_RIGHT:
-            to_run = (binding->gesture_right.type != ACTION_NONE) ? &binding->gesture_right : &binding->action;
-            break;
-        case GESTURE_DIR_CLICK:
-        default:
-            to_run = &binding->action;
-            break;
-    }
-
-    if (to_run && to_run->type != ACTION_NONE) {
-        char desc[128];
-        snprintf(desc, sizeof(desc), "Gesture (%s, dir=%s, app=%s)",
-                 (btn_id == CONFIG_BUTTON_GESTURE ? "ThumbButton" : "DpiToggle"),
-                 dir_name, front_app);
-        daemon_dispatch_action(ctx, to_run, desc);
-
-        char payload[256];
-        snprintf(payload, sizeof(payload), "{\"button\":\"%s\",\"direction\":\"%s\",\"action\":%d}",
-                 (btn_id == CONFIG_BUTTON_GESTURE ? "GestureButton" : "DpiToggle"),
-                 dir_name, (int)to_run->type);
-        ipc_server_broadcast_event("gesture_triggered", payload);
-    }
+    openlogi_daemon_ctx_t *ctx = context;
+    daemon_dispatch_action(ctx, action, button_id_to_string(button));
+    char payload[160];
+    snprintf(payload, sizeof(payload), "{\"button\":\"%s\",\"direction\":\"%s\"}",
+             button_id_to_string(button), gesture_direction_name(direction));
+    ipc_server_broadcast_event("button_triggered", payload);
 }
 
 static const config_device_t *daemon_get_active_device_config(const openlogi_daemon_ctx_t *ctx)
@@ -250,59 +187,27 @@ static const config_device_t *daemon_get_active_device_config(const openlogi_dae
 static hook_action_t on_hook_event(const hook_event_t *event, void *user_data)
 {
     (void)user_data;
-    if (!event) return HOOK_ACTION_PASS;
-
-    /* Handle scroll events with in-place inversion */
+    if (!event || g_daemon_ctx.runtime_state != RUNTIME_STATE_ACTIVE) return HOOK_ACTION_PASS;
     if (event->type == HOOK_EVENT_SCROLL) {
-        bool invert = false;
-        const config_device_t *cdev = daemon_get_active_device_config(&g_daemon_ctx);
-        if (cdev) {
-            invert = cdev->invert_scroll;
-        }
-        return invert ? HOOK_ACTION_INVERT : HOOK_ACTION_PASS;
+        const config_device_t *device = daemon_get_active_device_config(&g_daemon_ctx);
+        return device && device->enabled && device->invert_scroll ? HOOK_ACTION_INVERT : HOOK_ACTION_PASS;
     }
-
-    /* Map intercepted OS mouse event to button identifier */
-    config_button_id_t btn_id = CONFIG_BUTTON_UNKNOWN;
-    if (event->type == HOOK_EVENT_BUTTON_DOWN || event->type == HOOK_EVENT_BUTTON_UP) {
-        if (event->button_number == 3) btn_id = CONFIG_BUTTON_MIDDLE;
-        else if (event->button_number == 4) btn_id = CONFIG_BUTTON_BACK;
-        else if (event->button_number == 5) btn_id = CONFIG_BUTTON_FORWARD;
-        else if (event->button_number == 6) btn_id = CONFIG_BUTTON_GESTURE;
-        else if (event->button_number == 7) btn_id = CONFIG_BUTTON_DPI_TOGGLE;
-        else if (event->button_number == 1) btn_id = CONFIG_BUTTON_LEFT;
-        else if (event->button_number == 2) btn_id = CONFIG_BUTTON_RIGHT;
-    }
-
-    if (btn_id != CONFIG_BUTTON_UNKNOWN) {
-        char front_app[256] = { 0 };
-        app_watch_get_cached(front_app, sizeof(front_app));
-
-        const config_button_binding_t *binding = config_resolve_binding(
-            &g_daemon_ctx.config, NULL, front_app, btn_id
-        );
-
-        if (binding && binding->action.type != ACTION_NONE) {
-            uint64_t now_ms = daemon_get_time_ms();
-            if (event->type == HOOK_EVENT_BUTTON_DOWN) {
-                button_runtime_down(&g_button_rt, (uint32_t)btn_id, false, now_ms, NULL);
-                return HOOK_ACTION_SUPPRESS;
-            } else if (event->type == HOOK_EVENT_BUTTON_UP) {
-                if (button_runtime_is_pressed(&g_button_rt, (uint32_t)btn_id)) {
-                    button_runtime_up(&g_button_rt, (uint32_t)btn_id, now_ms);
-                    return HOOK_ACTION_SUPPRESS;
-                }
-            }
-        } else if (event->type == HOOK_EVENT_BUTTON_UP) {
-            if (button_runtime_is_pressed(&g_button_rt, (uint32_t)btn_id)) {
-                uint64_t now_ms = daemon_get_time_ms();
-                button_runtime_up(&g_button_rt, (uint32_t)btn_id, now_ms);
-                return HOOK_ACTION_SUPPRESS;
-            }
-        }
-    }
-
-    return HOOK_ACTION_PASS;
+    config_button_id_t button = CONFIG_BUTTON_UNKNOWN;
+    if (event->button_number == 3) button = CONFIG_BUTTON_MIDDLE;
+    else if (event->button_number == 4) button = CONFIG_BUTTON_BACK;
+    else if (event->button_number == 5) button = CONFIG_BUTTON_FORWARD;
+    else if (event->button_number == 6) button = CONFIG_BUTTON_GESTURE;
+    else if (event->button_number == 7) button = CONFIG_BUTTON_DPI_TOGGLE;
+    if (event->type == HOOK_EVENT_MOUSE_DRAG)
+        return input_runtime_captured(&g_hook_input, button) ? HOOK_ACTION_SUPPRESS : HOOK_ACTION_PASS;
+    if (event->type != HOOK_EVENT_BUTTON_DOWN && event->type != HOOK_EVENT_BUTTON_UP) return HOOK_ACTION_PASS;
+    char app[256] = { 0 };
+    app_watch_get_cached(app, sizeof(app));
+    const config_button_binding_t *binding = config_resolve_binding(&g_daemon_ctx.config, NULL, app, button);
+    /* Raw gesture movement requires HID delivery, not the global OS fallback. */
+    if (binding && binding->is_gesture) binding = NULL;
+    return input_runtime_button(&g_hook_input, button, event->type == HOOK_EVENT_BUTTON_DOWN, binding)
+        ? HOOK_ACTION_SUPPRESS : HOOK_ACTION_PASS;
 }
 
 typedef struct {
@@ -314,108 +219,34 @@ typedef struct {
     uint8_t feat_smartshift;
     uint8_t feat_reprog;
     uint8_t feat_hires_wheel;
+    input_runtime_t input;
+    capture_spec_t captured;
+    hidpp_cid_info_t controls[32];
+    uint8_t control_count;
+    bool controls_loaded;
 } live_device_handle_t;
 
 static live_device_handle_t g_live_handles[OPENLOGI_MAX_DEVICES];
 
+static void daemon_cancel_input(void)
+{
+    input_runtime_cancel(&g_hook_input);
+    for (size_t i = 0; i < OPENLOGI_MAX_DEVICES; i++) input_runtime_cancel(&g_live_handles[i].input);
+    action_queue_clear_pending();
+}
+
 static void on_hid_report_event(hid_device_t *dev, const hidpp_raw_report_t *raw, void *user_data)
 {
-    openlogi_daemon_ctx_t *ctx = (openlogi_daemon_ctx_t *)user_data;
-    if (!dev || !raw || !ctx) return;
-
-    /* Find matching device handle info to get feature_index for reprog */
-    uint8_t feat_reprog = 0;
+    openlogi_daemon_ctx_t *ctx = user_data;
+    if (!dev || !raw || !ctx || ctx->runtime_state != RUNTIME_STATE_ACTIVE) return;
     for (size_t i = 0; i < ctx->device_count; i++) {
-        if (g_live_handles[i].dev_handle == dev || g_live_handles[i].secondary_handle == dev) {
-            feat_reprog = g_live_handles[i].feat_reprog;
-            break;
-        }
-    }
-    if (feat_reprog == 0) return;
-
-    hidpp_msg_t msg;
-    if (!hidpp_unpack(raw, &msg)) return;
-    if (msg.proto != HIDPP_PROTO_V20) return;
-    if (msg.u.v20.feature_index != feat_reprog) return;
-
-    hidpp_reprog_event_t ev;
-    if (!hidpp_reprog_decode_event(&msg.u.v20, feat_reprog, &ev)) return;
-
-    if (ev.type == REPROG_EVENT_DIVERTED_BUTTONS) {
-        bool thumb_down = false;
-        bool dpi_toggle_down = false;
-
-        for (uint8_t c = 0; c < ev.u.buttons.count; c++) {
-            uint16_t cid = ev.u.buttons.pressed_cids[c];
-            if (cid == HIDPP_CID_GESTURE_BUTTON || cid == CID_GESTURE_BUTTON) {
-                thumb_down = true;
-            } else if (cid == HIDPP_CID_MODE_SHIFT_SMARTSHIFT ||
-                       cid == HIDPP_CID_DPI_SWITCH_ED ||
-                       cid == HIDPP_CID_DPI_SWITCH_FD) {
-                dpi_toggle_down = true;
-            } else if (cid == CID_BACK_BUTTON || cid == HIDPP_CID_BACK_CLASSIC || cid == HIDPP_CID_BACK_MULTIPLAT) {
-                button_runtime_down(&g_button_rt, (uint32_t)CONFIG_BUTTON_BACK, false, daemon_get_time_ms(), NULL);
-            } else if (cid == CID_FORWARD_BUTTON || cid == HIDPP_CID_FORWARD_CLASSIC || cid == HIDPP_CID_FORWARD_MULTIPLAT) {
-                button_runtime_down(&g_button_rt, (uint32_t)CONFIG_BUTTON_FORWARD, false, daemon_get_time_ms(), NULL);
-            } else if (cid == CID_MIDDLE_BUTTON) {
-                button_runtime_down(&g_button_rt, (uint32_t)CONFIG_BUTTON_MIDDLE, false, daemon_get_time_ms(), NULL);
-            }
-        }
-
-        if (thumb_down) {
-            if (!swipe_accumulator_is_holding(&g_gesture_acc)) {
-                if (g_verbose) {
-                    printf("[openlogid] Diverted Thumb Gesture Button DOWN\n");
-                }
-                g_active_gesture_btn = CONFIG_BUTTON_GESTURE;
-                swipe_accumulator_begin(&g_gesture_acc);
-            }
-        } else if (dpi_toggle_down) {
-            if (!swipe_accumulator_is_holding(&g_gesture_acc)) {
-                if (g_verbose) {
-                    printf("[openlogid] Diverted ModeShift/DPI Button DOWN\n");
-                }
-                g_active_gesture_btn = CONFIG_BUTTON_DPI_TOGGLE;
-                swipe_accumulator_begin(&g_gesture_acc);
-            }
-        } else {
-            /* All diverted buttons released */
-            if (swipe_accumulator_is_holding(&g_gesture_acc)) {
-                config_button_id_t btn = g_active_gesture_btn;
-                bool was_click = swipe_accumulator_end(&g_gesture_acc);
-                g_active_gesture_btn = CONFIG_BUTTON_UNKNOWN;
-                if (g_verbose) {
-                    printf("[openlogid] Diverted Button UP (plain_click=%d)\n", (int)was_click);
-                }
-                if (was_click) {
-                    daemon_dispatch_gesture(ctx, btn, GESTURE_DIR_CLICK);
-                }
-            }
-            uint64_t now_ms = daemon_get_time_ms();
-            if (button_runtime_is_pressed(&g_button_rt, (uint32_t)CONFIG_BUTTON_BACK)) {
-                button_runtime_up(&g_button_rt, (uint32_t)CONFIG_BUTTON_BACK, now_ms);
-            }
-            if (button_runtime_is_pressed(&g_button_rt, (uint32_t)CONFIG_BUTTON_FORWARD)) {
-                button_runtime_up(&g_button_rt, (uint32_t)CONFIG_BUTTON_FORWARD, now_ms);
-            }
-            if (button_runtime_is_pressed(&g_button_rt, (uint32_t)CONFIG_BUTTON_MIDDLE)) {
-                button_runtime_up(&g_button_rt, (uint32_t)CONFIG_BUTTON_MIDDLE, now_ms);
-            }
-        }
-    } else if (ev.type == REPROG_EVENT_RAW_XY) {
-        if (swipe_accumulator_is_holding(&g_gesture_acc)) {
-            gesture_direction_t committed = swipe_accumulator_accumulate(
-                &g_gesture_acc,
-                ev.u.raw_xy.dx,
-                ev.u.raw_xy.dy
-            );
-            if (committed != GESTURE_DIR_NONE) {
-                if (g_verbose) {
-                    printf("[openlogid] Gesture swipe committed: %s\n", gesture_direction_name(committed));
-                }
-                daemon_dispatch_gesture(ctx, g_active_gesture_btn, committed);
-            }
-        }
+        live_device_handle_t *handle = &g_live_handles[i];
+        if (handle->dev_handle != dev && handle->secondary_handle != dev) continue;
+        char app[256] = { 0 };
+        app_watch_get_cached(app, sizeof(app));
+        input_runtime_report(&handle->input, raw, handle->feat_reprog,
+                             &ctx->config, ctx->devices[i].device_key, app);
+        break;
     }
 }
 
@@ -431,146 +262,88 @@ static size_t count_online_usable_devices(const openlogi_daemon_ctx_t *ctx)
     return count;
 }
 
-static void daemon_apply_diversion(openlogi_daemon_ctx_t *ctx)
+static bool write_capture(void *context, uint16_t cid, bool divert, bool raw_xy)
 {
-    if (!ctx || !hook_is_running()) return;
+    live_device_handle_t *handle = context;
+    return hidpp_reprog_set_reporting(handle->dev_handle, handle->device_index,
+        handle->feat_reprog, handle->sw_id, cid, divert, raw_xy);
+}
 
+static bool daemon_apply_diversion(openlogi_daemon_ctx_t *ctx)
+{
+    if (!ctx || !hook_is_running()) return false;
+    char app[256] = { 0 };
+    app_watch_get_cached(app, sizeof(app));
+    bool ok = true;
     for (size_t i = 0; i < ctx->device_count; i++) {
-        if (!ctx->devices[i].online || !g_live_handles[i].dev_handle) continue;
-        if (g_live_handles[i].feat_reprog == 0) continue;
-
-        const config_device_t *cdev = NULL;
-        for (size_t cd = 0; cd < ctx->config.device_count; cd++) {
-            if (strcmp(ctx->config.devices[cd].device_key, ctx->devices[i].device_key) == 0 ||
-                strcmp(ctx->config.devices[cd].device_key, "default") == 0) {
-                cdev = &ctx->config.devices[cd];
-                break;
+        live_device_handle_t *handle = &g_live_handles[i];
+        if (!ctx->devices[i].online || !handle->dev_handle || !handle->feat_reprog) continue;
+        const config_device_t *device = config_resolve_device(&ctx->config, ctx->devices[i].device_key);
+        capture_spec_t logical, desired;
+        capture_plan_resolve_for_app(device, app, &logical);
+        capture_spec_init(&desired);
+        if (logical.divert_count && !handle->controls_loaded) {
+            uint8_t count = 0;
+            if (!hidpp_reprog_get_count(handle->dev_handle, handle->device_index,
+                                       handle->feat_reprog, handle->sw_id, &count) || count > 32) return false;
+            for (uint8_t c = 0; c < count; c++) {
+                if (!hidpp_reprog_get_cid_info(handle->dev_handle, handle->device_index,
+                    handle->feat_reprog, handle->sw_id, c, &handle->controls[c])) return false;
+            }
+            handle->control_count = count;
+            handle->controls_loaded = true;
+        }
+        for (size_t c = 0; c < handle->control_count; c++) {
+            uint16_t cid = handle->controls[c].cid;
+            config_button_id_t button = input_button_for_cid(cid);
+            for (size_t n = 0; n < logical.divert_count; n++) {
+                if (button != CONFIG_BUTTON_UNKNOWN && button == input_button_for_cid(logical.divert_cids[n])) {
+                    capture_spec_add_cid(&desired, cid);
+                    desired.wants_raw_xy = logical.wants_raw_xy;
+                }
             }
         }
-        if (!cdev && ctx->config.device_count > 0) {
-            cdev = &ctx->config.devices[0];
-        }
-
-        capture_spec_t plan;
-        capture_plan_resolve(cdev, &plan);
-        if (plan.divert_count == 0) {
-            capture_spec_add_cid(&plan, HIDPP_CID_GESTURE_BUTTON);
-            capture_spec_add_cid(&plan, HIDPP_CID_MODE_SHIFT_SMARTSHIFT);
-            plan.wants_raw_xy = true;
-        }
-
-        for (size_t c = 0; c < plan.divert_count; c++) {
-            uint16_t cid = plan.divert_cids[c];
-            bool raw_xy = (cid == CID_GESTURE_BUTTON || cid == HIDPP_CID_GESTURE_BUTTON) ? plan.wants_raw_xy : false;
-            hidpp_reprog_set_reporting(
-                g_live_handles[i].dev_handle,
-                g_live_handles[i].device_index,
-                g_live_handles[i].feat_reprog,
-                g_live_handles[i].sw_id,
-                cid,
-                true,
-                raw_xy
-            );
-        }
-
-        hid_register_report_callback(g_live_handles[i].dev_handle, on_hid_report_event, ctx);
-
-        if (g_live_handles[i].secondary_handle) {
-            hidpp_reprog_set_reporting(
-                g_live_handles[i].secondary_handle,
-                g_live_handles[i].device_index,
-                g_live_handles[i].feat_reprog,
-                g_live_handles[i].sw_id,
-                HIDPP_CID_GESTURE_BUTTON,
-                true,
-                true
-            );
-            hidpp_reprog_set_reporting(
-                g_live_handles[i].secondary_handle,
-                g_live_handles[i].device_index,
-                g_live_handles[i].feat_reprog,
-                g_live_handles[i].sw_id,
-                HIDPP_CID_MODE_SHIFT_SMARTSHIFT,
-                true,
-                true
-            );
-            hid_register_report_callback(g_live_handles[i].secondary_handle, on_hid_report_event, ctx);
-        }
+        /* Register delivery before taking any native control away. Secondary
+         * collections deliver the same device events; never capture them blindly. */
+        hid_register_report_callback(handle->dev_handle, on_hid_report_event, ctx);
+        if (handle->secondary_handle) hid_register_report_callback(handle->secondary_handle, on_hid_report_event, ctx);
+        if (!capture_plan_apply(&handle->captured, &desired, write_capture, handle)) ok = false;
     }
+    return ok;
 }
 
 static void daemon_undivert_all(void)
 {
     hidpp_diversion_teardown_all();
+    for (size_t i = 0; i < OPENLOGI_MAX_DEVICES; i++) capture_spec_init(&g_live_handles[i].captured);
 }
+
+static bool safety_start_hook(void *ctx) { (void)ctx; return hook_init(on_hook_event, NULL) && hook_start(); }
+static void safety_stop_hook(void *ctx) { (void)ctx; hook_stop(); }
+static void safety_start_watch(void *ctx) { (void)ctx; if (!app_watch_is_running()) app_watch_start(on_app_changed, NULL); }
+static void safety_stop_watch(void *ctx) { (void)ctx; app_watch_stop(); }
+static void safety_cancel(void *ctx) { (void)ctx; daemon_cancel_input(); }
+static bool safety_capture(void *ctx) { return daemon_apply_diversion(ctx); }
+static void safety_restore(void *ctx) { (void)ctx; daemon_undivert_all(); }
+static void safety_stop_jobs(void *ctx) { (void)ctx; action_queue_shutdown(); }
+static void safety_cancel_jobs(void *ctx) { (void)ctx; action_queue_cancel(); }
+static const daemon_safety_ops_t safety_ops = { safety_start_hook, safety_stop_hook, safety_start_watch,
+    safety_stop_watch, safety_cancel, safety_capture, safety_restore, safety_stop_jobs, safety_cancel_jobs };
 
 static void daemon_reconcile_runtime_state(openlogi_daemon_ctx_t *ctx)
 {
     if (!ctx) return;
-
-    size_t usable = count_online_usable_devices(ctx);
-    openlogi_runtime_state_t target = daemon_compute_target_state(usable);
-
-    if (!daemon_state_should_transition(ctx->runtime_state, target)) {
-        return; /* Idempotent: state already reconciled */
-    }
-
-    if (target == RUNTIME_STATE_ACTIVE) {
-        printf("[openlogid] Usable Logitech device online (%zu device%s); activating input handling...\n",
-               usable, usable > 1 ? "s" : "");
-
-        /* 1. Start foreground application profile watcher */
-        if (!app_watch_is_running()) {
-            app_watch_start(on_app_changed, NULL);
-        }
-
-        /* 2. Start OS event tap hook */
-        bool hook_ok = false;
-        if (!hook_is_running()) {
-            hook_ok = hook_init(on_hook_event, NULL) && hook_start();
-            if (hook_ok) {
-                printf("[openlogid] OS input interception hook active.\n");
-            } else {
-                printf("[openlogid] Notice: Accessibility/Input Monitoring permission not yet granted; hook in passive mode.\n");
-            }
-        } else {
-            hook_ok = true;
-        }
-
-        /* 3. Apply hardware diversion only if hook is functional */
-        if (hook_ok) {
-            daemon_apply_diversion(ctx);
-            ctx->runtime_state = RUNTIME_STATE_ACTIVE;
-            ipc_server_broadcast_event("runtime_state_changed", "{\"state\":\"active\"}");
-        } else {
-            ctx->runtime_state = RUNTIME_STATE_STANDBY;
-            printf("[openlogid] Input hook not active (missing permissions); retaining lightweight standby.\n");
-        }
-    } else {
-        printf("[openlogid] No usable devices online; entering lightweight standby...\n");
-
-        /* 1. Invalidate device runtime state */
-        button_runtime_cancel_all(&g_button_rt, BUTTON_END_CANCELED_INVALIDATED);
-        swipe_accumulator_init(&g_gesture_acc);
-        g_active_gesture_btn = CONFIG_BUTTON_UNKNOWN;
-        action_queue_clear_pending();
-
-        /* 2. Disarm any accessible hardware diversion */
-        daemon_undivert_all();
-
-        /* 3. Stop OS input hook */
-        if (hook_is_running()) {
-            hook_stop();
-        }
-
-        /* 4. Stop foreground application profile watcher */
-        if (app_watch_is_running()) {
-            app_watch_stop();
-        }
-
-        ctx->runtime_state = RUNTIME_STATE_STANDBY;
-        ipc_server_broadcast_event("runtime_state_changed", "{\"state\":\"standby\"}");
-    }
+    bool permissions = hook_check_permission();
+#ifdef __APPLE__
+    permissions = permissions && IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted;
+#endif
+    openlogi_runtime_state_t previous = ctx->runtime_state;
+    ctx->runtime_state = RUNTIME_STATE_STANDBY; /* Gate input during arming/restoration. */
+    bool active = daemon_safety_reconcile(count_online_usable_devices(ctx), permissions,
+                                          hook_is_running(), &safety_ops, ctx);
+    ctx->runtime_state = active ? RUNTIME_STATE_ACTIVE : RUNTIME_STATE_STANDBY;
+    if (previous != ctx->runtime_state)
+        ipc_server_broadcast_event("runtime_state_changed", active ? "{\"state\":\"active\"}" : "{\"state\":\"standby\"}");
 }
 
 static void on_hotplug_event(const hid_device_info_t *info, bool connected, void *user_data);
@@ -608,6 +381,9 @@ static void daemon_probe_hardware(openlogi_daemon_ctx_t *ctx)
         prev_devs[d].online = ctx->devices[d].online;
     }
 
+    daemon_cancel_input();
+    daemon_undivert_all();
+    memset(g_live_handles, 0, sizeof(g_live_handles));
     ctx->device_count = 0;
 
     for (int i = 0; i < count && ctx->device_count < OPENLOGI_MAX_DEVICES; i++) {
@@ -657,6 +433,7 @@ static void daemon_probe_hardware(openlogi_daemon_ctx_t *ctx)
             st->smartshift_threshold = probed.smartshift_threshold;
             st->online = true;
 
+            input_runtime_init(&g_live_handles[idx].input, daemon_input_dispatch, ctx);
             g_live_handles[idx].dev_handle = dev;
             g_live_handles[idx].secondary_handle = NULL;
             g_live_handles[idx].device_index = HIDPP_DEVICE_RECEIVER;
@@ -775,9 +552,8 @@ static void on_hotplug_event(const hid_device_info_t *info, bool connected, void
                     g_live_handles[i].secondary_handle = NULL;
                 }
                 /* Per-device disconnect cleanup */
-                button_runtime_cancel_all(&g_button_rt, BUTTON_END_CANCELED_INVALIDATED);
-                swipe_accumulator_init(&g_gesture_acc);
-                g_active_gesture_btn = CONFIG_BUTTON_UNKNOWN;
+                input_runtime_cancel(&g_live_handles[i].input);
+                capture_spec_init(&g_live_handles[i].captured);
                 action_queue_clear_pending();
 
                 char payload[128];
@@ -884,7 +660,7 @@ static bool daemon_reload_config(openlogi_daemon_ctx_t *ctx)
         free(new_cfg);
         return false;
     }
-    button_runtime_cancel_all(&g_button_rt, BUTTON_END_CANCELED_INVALIDATED);
+    daemon_cancel_input();
     config_free(&ctx->config);
     ctx->config = *new_cfg;
     free(new_cfg);
@@ -977,8 +753,7 @@ int daemon_main(int argc, char **argv)
     signals_init();
     inject_init();
     action_queue_init();
-    swipe_accumulator_init(&g_gesture_acc);
-    button_runtime_init(&g_button_rt, on_button_runtime_event, &g_daemon_ctx);
+    input_runtime_init(&g_hook_input, daemon_input_dispatch, &g_daemon_ctx);
 
     /* 2. Determine Paths */
     if (g_socket_file[0] == '\0') {
@@ -1065,10 +840,11 @@ int daemon_main(int argc, char **argv)
 
     uint64_t last_app_tick_ms = 0;
     uint64_t last_standby_scan_ms = 0;
+    uint64_t last_safety_check_ms = 0;
 
     /* Main Daemon Loop */
     while (!signals_should_exit()) {
-        CFTimeInterval timeout = (g_daemon_ctx.runtime_state == RUNTIME_STATE_ACTIVE) ? 0.05 : 2.0;
+        double timeout = (g_daemon_ctx.runtime_state == RUNTIME_STATE_ACTIVE) ? 0.05 : 2.0;
 #ifdef __APPLE__
         CFRunLoopRunInMode(kCFRunLoopDefaultMode, timeout, false);
 #else
@@ -1094,57 +870,19 @@ int daemon_main(int argc, char **argv)
         }
 
         uint64_t now_ms = daemon_get_time_ms();
+        if (now_ms >= last_safety_check_ms + 1000) {
+            last_safety_check_ms = now_ms;
+            daemon_reconcile_runtime_state(&g_daemon_ctx);
+        }
 
         if (g_daemon_ctx.runtime_state == RUNTIME_STATE_ACTIVE) {
-            button_runtime_tick(&g_button_rt, now_ms);
 
             if (now_ms >= last_app_tick_ms + 100) {
                 last_app_tick_ms = now_ms;
                 app_watch_tick();
             }
 
-            /* If the input hook could not be started at boot due to missing macOS permissions,
-             * retry automatically once permissions are granted in System Settings. */
-            if (!hook_is_running()) {
-                static uint64_t last_hook_retry_ms = 0;
-                if (now_ms >= last_hook_retry_ms + 1000) {
-                    last_hook_retry_ms = now_ms;
-#ifdef __APPLE__
-                    if (AXIsProcessTrusted()) {
-                        if (hook_init(on_hook_event, NULL) && hook_start()) {
-                            printf("[openlogid] Accessibility permission granted! Input interception hook activated.\n");
-                            daemon_apply_diversion(&g_daemon_ctx);
-                            ipc_server_broadcast_event("hook_activated", "{\"active\":true}");
-                        }
-                    }
-#else
-                    if (hook_init(on_hook_event, NULL) && hook_start()) {
-                        daemon_apply_diversion(&g_daemon_ctx);
-                        ipc_server_broadcast_event("hook_activated", "{\"active\":true}");
-                    }
-#endif
-                }
-            }
         } else {
-            /* In STANDBY: skip button ticks, app polling, and active scroll math completely.
-             * If permissions were granted while in standby, initialize and activate the event tap hook. */
-            if (!hook_is_running()) {
-#ifdef __APPLE__
-                if (AXIsProcessTrusted()) {
-                    if (hook_init(on_hook_event, NULL) && hook_start()) {
-                        printf("[openlogid] Accessibility permission granted! Input interception hook activated.\n");
-                        ipc_server_broadcast_event("hook_activated", "{\"active\":true}");
-                        daemon_reconcile_runtime_state(&g_daemon_ctx);
-                    }
-                }
-#else
-                if (hook_init(on_hook_event, NULL) && hook_start()) {
-                    ipc_server_broadcast_event("hook_activated", "{\"active\":true}");
-                    daemon_reconcile_runtime_state(&g_daemon_ctx);
-                }
-#endif
-            }
-
             /* Perform bounded fallback hardware rescan every 5 seconds for sleeping paired devices. */
             if (now_ms >= last_standby_scan_ms + 5000) {
                 last_standby_scan_ms = now_ms;
@@ -1175,10 +913,8 @@ int daemon_main(int argc, char **argv)
     /* Clean Shutdown */
     config_watch_stop();
     ipc_server_stop();
-    hook_stop();
-    app_watch_stop();
-    action_queue_shutdown();
-    hidpp_diversion_teardown_all();
+    g_daemon_ctx.runtime_state = RUNTIME_STATE_STANDBY;
+    daemon_safety_stop(&safety_ops, &g_daemon_ctx);
     hid_stop_hotplug_monitor();
 
     for (size_t i = 0; i < g_daemon_ctx.device_count; i++) {

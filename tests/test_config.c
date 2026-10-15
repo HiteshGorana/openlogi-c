@@ -325,10 +325,39 @@ static void test_config_free_workflows(void)
     assert(cfg.devices[0].default_profile.bindings[0].action.type == ACTION_WORKFLOW);
     assert(cfg.devices[0].default_profile.bindings[0].action.u.workflow != NULL);
     assert(cfg.devices[0].default_profile.bindings[0].action.u.workflow->step_count == 3);
+    assert(cfg.devices[0].default_profile.bindings[0].action.u.workflow->steps[1].type == WORKFLOW_STEP_DELAY);
+    assert(cfg.devices[0].default_profile.bindings[0].action.u.workflow->steps[1].u.delay_ms == 150);
 
     /* Free config memory */
     config_free(&cfg);
     assert(cfg.device_count == 0);
+
+    /* Also verify documented integer delay syntax: { Delay = 250 } */
+    const char *wf_toml2 =
+        "schema_version = 7\n"
+        "[devices.default]\n"
+        "[devices.default.bindings]\n"
+        "MiddleClick = { Workflow = [\n"
+        "    { PressKey = \"Cmd+Space\" },\n"
+        "    { Delay = 250 },\n"
+        "    { TypeText = \"Terminal\" }\n"
+        "] }\n";
+    ok = config_parse_string(wf_toml2, &cfg, errbuf, sizeof(errbuf));
+    assert(ok && "Parsing integer Delay should succeed");
+    assert(cfg.devices[0].default_profile.bindings[0].action.u.workflow->steps[1].type == WORKFLOW_STEP_DELAY);
+    assert(cfg.devices[0].default_profile.bindings[0].action.u.workflow->steps[1].u.delay_ms == 250);
+    config_free(&cfg);
+
+    /* Verify malformed workflow step rejection */
+    const char *bad_wf_toml =
+        "schema_version = 7\n"
+        "[devices.default]\n"
+        "[devices.default.bindings]\n"
+        "MiddleClick = { Workflow = [\n"
+        "    { UnknownStep = \"foobar\" }\n"
+        "] }\n";
+    ok = config_parse_string(bad_wf_toml, &cfg, errbuf, sizeof(errbuf));
+    assert(!ok && "Unknown workflow step should be rejected");
 
     TEST_PASS("test_config_free_workflows");
 }

@@ -56,6 +56,7 @@ typedef enum {
 #define MOD_SHIFT (1 << 3)
 
 #define MAX_WORKFLOW_STEPS 16
+#define MAX_WORKFLOW_DELAY_MS 60000
 
 typedef enum {
     WORKFLOW_STEP_PRESS_KEY = 0,

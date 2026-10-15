@@ -158,7 +158,7 @@ bool hidpp_reprog_decode_event(
 /**
  * @brief Track a diverted control so it can be restored on exit or crash.
  */
-void hidpp_diversion_track(
+bool hidpp_diversion_track(
     hid_device_t *dev,
     uint8_t device_index,
     uint8_t feature_index,
@@ -178,7 +178,7 @@ void hidpp_diversion_untrack_device(hid_device_t *dev);
 
 /**
  * @brief Synchronously disarm and restore ALL active diversions.
- * Must be called in SIGINT/SIGTERM handlers and at process exit.
+ * Call from normal execution context after stopping producers, never a signal handler.
  */
 void hidpp_diversion_teardown_all(void);
 

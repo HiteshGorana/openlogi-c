@@ -16,9 +16,11 @@ static void test_capture_plan_resolves_standard_buttons(void)
 {
     config_device_t dev;
     memset(&dev, 0, sizeof(dev));
+    dev.enabled = true;
 
-    /* Map Back button */
+    /* Map Back button with usable action */
     dev.default_profile.bindings[0].button_id = CONFIG_BUTTON_BACK;
+    dev.default_profile.bindings[0].action.type = ACTION_MISSION_CONTROL;
     dev.default_profile.binding_count = 1;
 
     capture_spec_t spec;
@@ -34,10 +36,12 @@ static void test_capture_plan_gesture_button_includes_xy(void)
 {
     config_device_t dev;
     memset(&dev, 0, sizeof(dev));
+    dev.enabled = true;
 
-    /* Map gesture button */
+    /* Map gesture button with usable action */
     dev.default_profile.bindings[0].button_id = CONFIG_BUTTON_GESTURE;
     dev.default_profile.bindings[0].is_gesture = true;
+    dev.default_profile.bindings[0].action.type = ACTION_MISSION_CONTROL;
     dev.default_profile.binding_count = 1;
 
     capture_spec_t spec;
@@ -52,19 +56,22 @@ static void test_capture_plan_per_app_override_merging(void)
 {
     config_device_t dev;
     memset(&dev, 0, sizeof(dev));
+    dev.enabled = true;
 
     /* Global default has only Forward mapped */
     dev.default_profile.bindings[0].button_id = CONFIG_BUTTON_FORWARD;
+    dev.default_profile.bindings[0].action.type = ACTION_MISSION_CONTROL;
     dev.default_profile.binding_count = 1;
 
     /* Per-app profile for VSCode has Back mapped */
     strcpy(dev.app_profiles[0].app_id, "com.microsoft.VSCode");
     dev.app_profiles[0].bindings[0].button_id = CONFIG_BUTTON_BACK;
+    dev.app_profiles[0].bindings[0].action.type = ACTION_MISSION_CONTROL;
     dev.app_profiles[0].binding_count = 1;
     dev.app_profile_count = 1;
 
     capture_spec_t spec;
-    capture_plan_resolve(&dev, &spec);
+    capture_plan_resolve_for_app(&dev, "com.microsoft.VSCode", &spec);
 
     /* Hardware diversion must union both Forward and Back */
     assert(spec.divert_count == 2);
@@ -76,9 +83,11 @@ static void test_capture_plan_unmapped_buttons_remain_hardware(void)
 {
     config_device_t dev;
     memset(&dev, 0, sizeof(dev));
+    dev.enabled = true;
 
     /* Only MiddleClick mapped */
     dev.default_profile.bindings[0].button_id = CONFIG_BUTTON_MIDDLE;
+    dev.default_profile.bindings[0].action.type = ACTION_MISSION_CONTROL;
     dev.default_profile.binding_count = 1;
 
     capture_spec_t spec;
