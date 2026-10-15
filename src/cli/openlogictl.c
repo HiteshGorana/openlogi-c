@@ -1478,10 +1478,15 @@ static void copy_to_clipboard(const char *text)
 static void request_macos_permissions(const char *binary)
 {
 #ifdef __APPLE__
+    (void)binary;
     bool acc = AXIsProcessTrusted();
     bool inp = (IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted);
 
-    if (!acc) {
+    if (!inp) {
+        IOHIDRequestAccess(kIOHIDRequestTypeListenEvent);
+        CGRequestListenEventAccess();
+        (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent\" 2>/dev/null");
+    } else if (!acc) {
         const void *keys[] = { kAXTrustedCheckOptionPrompt };
         const void *values[] = { kCFBooleanTrue };
         CFDictionaryRef options = CFDictionaryCreate(
@@ -1496,20 +1501,7 @@ static void request_macos_permissions(const char *binary)
             acc = AXIsProcessTrustedWithOptions(options);
             CFRelease(options);
         }
-    }
-    if (!inp) {
-        IOHIDRequestAccess(kIOHIDRequestTypeListenEvent);
-        CGRequestListenEventAccess();
-    }
-
-    (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility\" 2>/dev/null");
-    (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent\" 2>/dev/null");
-
-    if (binary && binary[0]) {
-        copy_to_clipboard(binary);
-        char cmd[4200];
-        snprintf(cmd, sizeof(cmd), "open -R \"%s\" 2>/dev/null", binary);
-        (void)system(cmd);
+        (void)system("open \"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility\" 2>/dev/null");
     }
 #else
     (void)binary;
@@ -1784,8 +1776,8 @@ static void doctor_run_click_test(ipc_client_t *client)
             if (ev_name && (strcmp(ev_name, "gesture_triggered") == 0 ||
                             strcmp(ev_name, "dpi_changed") == 0 ||
                             strcmp(ev_name, "smartshift_changed") == 0 ||
-                            strcmp(ev_name, "app_activated") == 0 ||
-                            strcmp(ev_name, "hook_activated") == 0)) {
+                            strcmp(ev_name, "button_down") == 0 ||
+                            strcmp(ev_name, "button_up") == 0)) {
                 printf(COLOR_BOLD COLOR_GREEN "    [✔] Intercepted event: %s!" COLOR_RESET "\n", ev_name);
                 yyjson_val *data = yyjson_obj_get(params, "data");
                 if (data) {

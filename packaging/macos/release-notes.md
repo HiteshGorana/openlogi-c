@@ -1,17 +1,23 @@
-### OpenLogi v0.1.7 — Zero-Touch App Bundle, Trackpad Pass-Through & Native Permissions
+### OpenLogi v0.1.8 — Sequential Resumable Onboarding, DMG Protection & Input Safety
 
-This release brings zero-terminal operation, seamless permission handling, and fluid trackpad pass-through to OpenLogi Pure C:
+This release brings a streamlined, reliable onboarding journey, zero-prompt background daemon execution, disk image launch protection, and foolproof input safety gates:
 
 #### Highlights:
-1. **Zero-Touch `OpenLogi.app` Lifecycle**:
-   - Double-clicking `OpenLogi.app` automatically prompts for **Accessibility** and **Input Monitoring** permissions, opening the exact System Settings panes.
-   - Automatically writes and configures login autostart (`~/Library/LaunchAgents/io.github.openlogi.agent.plist`) with `SuccessfulExit = false` so clean stops stay stopped, while reboots and crashes auto-restart.
-   - Opening `OpenLogi.app` while already running queries live mouse status and battery percentage over IPC, offering quick **[Keep Running]**, **[Stop OpenLogi]**, and **[Uninstall]** options.
-2. **Apple Silicon & Trackpad Pass-Through**:
-   - Accurately preserves trackpad gestures (`kCGScrollWheelEventScrollPhase`, `kCGScrollWheelEventMomentumPhase`, continuous scroll).
-   - In-place scroll wheel inversion exclusively targets discrete mouse wheels without interfering with trackpad momentum.
-3. **Reliable Input Monitoring Access**:
-   - Uses official Apple `IOHIDRequestAccess` and `IOHIDCheckAccess` APIs to ensure raw HID++ Bluetooth and USB communication works reliably.
+1. **Resumable Sequential Onboarding**:
+   - Double-clicking `OpenLogi.app` guides the user through one permission at a time (Input Monitoring first, then Accessibility), avoiding confusing overlapping System Settings panes.
+   - Bounded polling with clear **[Check Again]** and **[Finish Later]** options. State is saved to `~/.local/state/openlogi/onboarding.state` so progress is automatically resumed if interrupted or if macOS requires a Quit & Reopen.
+   - Probes live Logitech hardware and reports real device model & battery percentage before completing setup.
+   - Includes an interactive 6-second live button click verification test.
+   - Prompts for login autostart preference explicitly (**[Start at Login]** or **[No, Start Manually]**).
+2. **DMG & Temporary Translocation Protection**:
+   - Running directly from a mounted DMG or temporary folder displays an installation alert prompting the user to install to `/Applications`, preventing invalid temporary paths from being registered into LaunchAgents.
+3. **Daemon Non-Interactivity & Input Safety**:
+   - Background daemon processes (e.g. launched by `launchd`) execute strictly noninteractively with zero unexpected permission dialogs.
+   - If OS input monitoring permissions are not granted, the daemon strictly stays in `STANDBY` mode. Buttons are never diverted, guaranteeing native mouse clicks and scrolling remain 100% functional while setup is pending.
+4. **Command Dispatch & Diagnostics**:
+   - Explicit CLI subcommands (`openlogi daemon`, `openlogi status`, `openlogi doctor`, etc.) are prioritized over app bundle GUI handlers, ensuring automated scripts and launchd services run cleanly.
+   - In `openlogi doctor`, click test false positives from application switching (`app_activated`) or hook activation have been eliminated.
+   - Direct `IOHIDCheckAccess` reporting in IPC `openlogi.get_status` without misleading fallbacks.
 
 #### Installation:
 
@@ -19,6 +25,6 @@ This release brings zero-terminal operation, seamless permission handling, and f
 curl -fsSL https://raw.githubusercontent.com/HiteshGorana/openlogi-c/main/install.sh | sh
 ```
 
-Or download and open `OpenLogi.app` directly into `/Applications`.
+Or download `OpenLogi-arm64.dmg` / `OpenLogi.app` directly from the release assets below into `/Applications`.
 
 Your TOML configuration in `~/.config/openlogi/config.toml` is preserved across updates.

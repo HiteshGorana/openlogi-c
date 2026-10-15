@@ -141,8 +141,7 @@ static yyjson_mut_val *handle_get_status(openlogi_daemon_ctx_t *ctx, yyjson_mut_
     bool input_mon = false;
 #ifdef __APPLE__
     accessibility = AXIsProcessTrusted();
-    extern bool CGPreflightListenEventAccess(void);
-    input_mon = (IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted) || CGPreflightListenEventAccess();
+    input_mon = (IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted);
 #else
     accessibility = true;
     input_mon = true;

@@ -540,10 +540,12 @@ static void daemon_reconcile_runtime_state(openlogi_daemon_ctx_t *ctx)
         /* 3. Apply hardware diversion only if hook is functional */
         if (hook_ok) {
             daemon_apply_diversion(ctx);
+            ctx->runtime_state = RUNTIME_STATE_ACTIVE;
+            ipc_server_broadcast_event("runtime_state_changed", "{\"state\":\"active\"}");
+        } else {
+            ctx->runtime_state = RUNTIME_STATE_STANDBY;
+            printf("[openlogid] Input hook not active (missing permissions); retaining lightweight standby.\n");
         }
-
-        ctx->runtime_state = RUNTIME_STATE_ACTIVE;
-        ipc_server_broadcast_event("runtime_state_changed", "{\"state\":\"active\"}");
     } else {
         printf("[openlogid] No usable devices online; entering lightweight standby...\n");
 
@@ -1026,32 +1028,12 @@ int daemon_main(int argc, char **argv)
         printf("[openlogid] Config file hot-reload watcher active.\n");
     }
 
-    /* 7. Check and request system permissions if needed (macOS) */
+    /* 7. Check system permissions (non-interactive in background) */
 #ifdef __APPLE__
     bool has_ax = AXIsProcessTrusted();
     bool has_inp = (IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted);
-    if (!has_ax) {
-        const void *keys[] = { kAXTrustedCheckOptionPrompt };
-        const void *values[] = { kCFBooleanTrue };
-        CFDictionaryRef options = CFDictionaryCreate(
-            kCFAllocatorDefault,
-            keys,
-            values,
-            1,
-            &kCFTypeDictionaryKeyCallBacks,
-            &kCFTypeDictionaryValueCallBacks
-        );
-        if (options) {
-            AXIsProcessTrustedWithOptions(options);
-            CFRelease(options);
-        }
-    }
-    if (!has_inp) {
-        IOHIDRequestAccess(kIOHIDRequestTypeListenEvent);
-        CGRequestListenEventAccess();
-    }
     if (!has_ax || !has_inp) {
-        printf("[openlogid] Notice: Accessibility and/or Input Monitoring not granted. Requested system authorization.\n");
+        printf("[openlogid] Notice: Accessibility and/or Input Monitoring not yet granted. Operating in passive mode until authorized.\n");
     }
 #endif
 
@@ -1152,11 +1134,13 @@ int daemon_main(int argc, char **argv)
                     if (hook_init(on_hook_event, NULL) && hook_start()) {
                         printf("[openlogid] Accessibility permission granted! Input interception hook activated.\n");
                         ipc_server_broadcast_event("hook_activated", "{\"active\":true}");
+                        daemon_reconcile_runtime_state(&g_daemon_ctx);
                     }
                 }
 #else
                 if (hook_init(on_hook_event, NULL) && hook_start()) {
                     ipc_server_broadcast_event("hook_activated", "{\"active\":true}");
+                    daemon_reconcile_runtime_state(&g_daemon_ctx);
                 }
 #endif
             }

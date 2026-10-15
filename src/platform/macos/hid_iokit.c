@@ -368,8 +368,6 @@ int hid_transport_init(void)
 
     IOReturn ret = IOHIDManagerOpen(g_hid_manager, kIOHIDOptionsTypeNone);
     if (ret != kIOReturnSuccess) {
-        /* Open failed - request access from user so macOS registers the app in System Settings */
-        IOHIDRequestAccess(kIOHIDRequestTypeListenEvent);
         IOHIDManagerUnscheduleFromRunLoop(g_hid_manager, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
         CFRelease(g_hid_manager);
         g_hid_manager = NULL;
