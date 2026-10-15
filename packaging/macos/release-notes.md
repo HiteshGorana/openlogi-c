@@ -1,9 +1,15 @@
-### OpenLogi v0.1.8 — Sequential Resumable Onboarding, DMG Protection & Input Safety
+### OpenLogi v0.1.9 — LaunchServices Check-In & Clean Process Termination
 
-This release brings a streamlined, reliable onboarding journey, zero-prompt background daemon execution, disk image launch protection, and foolproof input safety gates:
+This release fixes LaunchServices application check-in and prevents macOS "application not responding" errors when reopening or quitting:
 
 #### Highlights:
-1. **Resumable Sequential Onboarding**:
+1. **LaunchServices / WindowServer Check-In**:
+   - Calls `TransformProcessType(kProcessTransformToUIElementApplication)` at launch, registering immediately with WindowServer so macOS never flags `OpenLogi.app` as "not responding".
+2. **Reliable App Stop & Uninstall**:
+   - Automatically unloads RunningBoard (`application.io.github.openlogi.agent.*`) and launchd services before process termination.
+   - Waits for daemon termination before deleting files, eliminating Finder "item can't be moved to Bin because it's open" errors.
+3. **Sequential Resumable Onboarding**:
+   - All improvements from v0.1.8 (step-by-step permission setup, DMG protection, standby input safety).
    - Double-clicking `OpenLogi.app` guides the user through one permission at a time (Input Monitoring first, then Accessibility), avoiding confusing overlapping System Settings panes.
    - Bounded polling with clear **[Check Again]** and **[Finish Later]** options. State is saved to `~/.local/state/openlogi/onboarding.state` so progress is automatically resumed if interrupted or if macOS requires a Quit & Reopen.
    - Probes live Logitech hardware and reports real device model & battery percentage before completing setup.

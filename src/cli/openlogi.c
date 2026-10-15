@@ -363,7 +363,16 @@ static int handle_already_running(pid_t existing_pid)
         snprintf(bootout, sizeof(bootout), "/bin/launchctl bootout %s 2>/dev/null", target);
         (void)system(bootout);
 
+        (void)system("for j in $(/bin/launchctl list | /usr/bin/grep -o 'application\\.io\\.github\\.openlogi\\.agent[^ ]*'); do /bin/launchctl bootout \"gui/$(id -u)/$j\" 2>/dev/null; done");
+
         kill(existing_pid, SIGTERM);
+        for (int i = 0; i < 20; i++) {
+            if (kill(existing_pid, 0) != 0) break;
+            usleep(100000);
+        }
+        if (kill(existing_pid, 0) == 0) {
+            kill(existing_pid, SIGKILL);
+        }
         (void)system("osascript -e 'display notification \"OpenLogi stopped and restored mouse hardware.\" with title \"OpenLogi\"' 2>/dev/null &");
     } else if (strcmp(out, "Uninstall") == 0) {
         char target[128];
@@ -372,15 +381,26 @@ static int handle_already_running(pid_t existing_pid)
         snprintf(bootout, sizeof(bootout), "/bin/launchctl bootout %s 2>/dev/null", target);
         (void)system(bootout);
 
+        (void)system("for j in $(/bin/launchctl list | /usr/bin/grep -o 'application\\.io\\.github\\.openlogi\\.agent[^ ]*'); do /bin/launchctl bootout \"gui/$(id -u)/$j\" 2>/dev/null; done");
+
         if (plist_path[0]) unlink(plist_path);
         kill(existing_pid, SIGTERM);
+        for (int i = 0; i < 20; i++) {
+            if (kill(existing_pid, 0) != 0) break;
+            usleep(100000);
+        }
+        if (kill(existing_pid, 0) == 0) {
+            kill(existing_pid, SIGKILL);
+        }
 
         if (home) {
-            char sock_path[512], lock_path[512];
+            char sock_path[512], lock_path[512], state_path[512];
             snprintf(sock_path, sizeof(sock_path), "%s/.local/state/openlogi/openlogi.sock", home);
             snprintf(lock_path, sizeof(lock_path), "%s/.local/state/openlogi/openlogi.lock", home);
+            snprintf(state_path, sizeof(state_path), "%s/.local/state/openlogi/onboarding.state", home);
             unlink(sock_path);
             unlink(lock_path);
+            unlink(state_path);
         }
 
         char app_path[1024] = { 0 };
@@ -406,6 +426,10 @@ static int handle_already_running(pid_t existing_pid)
 static int handle_app_bundle_launch(int argc, char **argv)
 {
     (void)argc;
+
+    /* Check in with LaunchServices / WindowServer immediately so macOS never marks the app as not responding */
+    ProcessSerialNumber psn = { 0, kCurrentProcess };
+    (void)TransformProcessType(&psn, kProcessTransformToUIElementApplication);
 
     /* 1. DMG / Translocation safety check */
     char exec_path[1024] = { 0 };
