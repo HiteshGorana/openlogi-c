@@ -33,6 +33,7 @@
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <pthread.h>
 #ifdef __APPLE__
 #include <CoreFoundation/CoreFoundation.h>
 #include <ApplicationServices/ApplicationServices.h>
@@ -91,53 +92,159 @@ static void on_app_changed(const char *app_id, void *user_data)
 }
 
 
+static pthread_mutex_t g_config_lock = PTHREAD_MUTEX_INITIALIZER;
+
 /* Forward declarations */
 static bool daemon_set_dpi(openlogi_daemon_ctx_t *ctx, const char *dev_key, uint16_t dpi);
 static bool daemon_set_smartshift(openlogi_daemon_ctx_t *ctx, const char *dev_key, uint8_t mode, uint8_t threshold);
 
-static void daemon_dispatch_action(openlogi_daemon_ctx_t *ctx, const openlogi_action_t *action, const char *source_desc)
+typedef struct {
+    openlogi_daemon_ctx_t *ctx;
+    char device_key[128];
+    uint64_t generation;
+} device_dispatch_ctx_t;
+
+typedef struct {
+    hid_device_t *dev_handle;
+    hid_device_t *secondary_handle;
+    char primary_transport[256];
+    char secondary_transport[256];
+    uint8_t device_index;
+    uint8_t sw_id;
+    uint8_t feat_dpi;
+    uint8_t feat_smartshift;
+    uint8_t feat_reprog;
+    uint8_t feat_hires_wheel;
+    input_runtime_t input;
+    capture_spec_t captured;
+    hidpp_cid_info_t controls[32];
+    uint8_t control_count;
+    bool controls_loaded;
+    uint64_t generation;
+    device_dispatch_ctx_t dispatch_ctx;
+} live_device_handle_t;
+
+static live_device_handle_t g_live_handles[OPENLOGI_MAX_DEVICES];
+
+static ssize_t find_device_index(const openlogi_daemon_ctx_t *ctx, const char *dev_key)
+{
+    if (!ctx || ctx->device_count == 0) return -1;
+    if (dev_key && dev_key[0] != '\0' && strcmp(dev_key, "default") != 0) {
+        for (size_t i = 0; i < ctx->device_count; i++) {
+            if (strcmp(ctx->devices[i].device_key, dev_key) == 0) return (ssize_t)i;
+        }
+        return -1;
+    }
+    if (ctx->config.selected_device[0] != '\0') {
+        for (size_t i = 0; i < ctx->device_count; i++) {
+            if (strcmp(ctx->devices[i].device_key, ctx->config.selected_device) == 0)
+                return (ssize_t)i;
+        }
+    }
+    for (size_t i = 0; i < ctx->device_count; i++) {
+        if (ctx->devices[i].online) return (ssize_t)i;
+    }
+    return 0;
+}
+
+static const config_device_t *daemon_get_active_device_config(const openlogi_daemon_ctx_t *ctx)
+{
+    if (!ctx || ctx->config.device_count == 0) return NULL;
+    const char *sel = ctx->config.selected_device;
+    if (sel[0] != '\0') {
+        const config_device_t *cdev = config_resolve_device(&ctx->config, sel);
+        if (cdev) return cdev;
+    }
+    return config_resolve_device(&ctx->config, NULL);
+}
+
+static void daemon_dispatch_action(openlogi_daemon_ctx_t *ctx, const openlogi_action_t *action,
+                                   const char *source_desc, const char *target_device_key)
 {
     if (!action || action->type == ACTION_NONE) return;
 
     if (g_verbose) {
-        printf("[openlogid] Action %d triggered via %s\n", (int)action->type, source_desc ? source_desc : "unknown");
+        printf("[openlogid] Action %d triggered via %s (device: %s)\n",
+               (int)action->type, source_desc ? source_desc : "unknown",
+               target_device_key ? target_device_key : "default");
     }
 
     if (action->type == ACTION_TOGGLE_SMARTSHIFT) {
-        for (size_t i = 0; i < ctx->device_count; i++) {
-            uint8_t cur = ctx->devices[i].smartshift_mode;
-            uint8_t next = (cur == 1) ? 2 : 1;
-            daemon_set_smartshift(ctx, ctx->devices[i].device_key, next, ctx->devices[i].smartshift_threshold);
+        const char *dev_key = target_device_key;
+        if (!dev_key && ctx->device_count > 0) {
+            pthread_mutex_lock(&g_config_lock);
+            const config_device_t *cdev = daemon_get_active_device_config(ctx);
+            dev_key = (cdev && cdev->device_key[0]) ? cdev->device_key : ctx->devices[0].device_key;
+            pthread_mutex_unlock(&g_config_lock);
         }
-        ipc_server_broadcast_event("smartshift_changed", "{\"toggled\":true}");
+        if (dev_key) {
+            ssize_t idx = find_device_index(ctx, dev_key);
+            if (idx >= 0 && (size_t)idx < ctx->device_count) {
+                uint8_t cur = ctx->devices[idx].smartshift_mode;
+                uint8_t next = (cur == 1) ? 2 : 1;
+                daemon_set_smartshift(ctx, dev_key, next, ctx->devices[idx].smartshift_threshold);
+                char payload[256];
+                snprintf(payload, sizeof(payload), "{\"device_key\":\"%s\",\"toggled\":true,\"mode\":%u}", dev_key, next);
+                ipc_server_broadcast_event("smartshift_changed", payload);
+            }
+        }
         return;
     }
 
     if (action->type == ACTION_CYCLE_DPI) {
-        for (size_t i = 0; i < ctx->device_count; i++) {
-            uint16_t cur_dpi = ctx->devices[i].dpi;
-            uint16_t next_dpi = (cur_dpi < 1600) ? 1600 : (cur_dpi < 2400 ? 2400 : 1000);
-            if (ctx->config.device_count > 0 && ctx->config.devices[0].dpi_preset_count > 0) {
-                const config_device_t *cdev = &ctx->config.devices[0];
-                for (size_t p = 0; p < cdev->dpi_preset_count; p++) {
-                    if (cdev->dpi_presets[p] == cur_dpi) {
-                        next_dpi = cdev->dpi_presets[(p + 1) % cdev->dpi_preset_count];
-                        break;
+        const char *dev_key = target_device_key;
+        if (!dev_key && ctx->device_count > 0) {
+            pthread_mutex_lock(&g_config_lock);
+            const config_device_t *cdev = daemon_get_active_device_config(ctx);
+            dev_key = (cdev && cdev->device_key[0]) ? cdev->device_key : ctx->devices[0].device_key;
+            pthread_mutex_unlock(&g_config_lock);
+        }
+        if (dev_key) {
+            ssize_t idx = find_device_index(ctx, dev_key);
+            if (idx >= 0 && (size_t)idx < ctx->device_count) {
+                uint16_t cur_dpi = ctx->devices[idx].dpi;
+                uint16_t next_dpi = (cur_dpi < 1600) ? 1600 : (cur_dpi < 2400 ? 2400 : 1000);
+                pthread_mutex_lock(&g_config_lock);
+                const config_device_t *cdev = config_resolve_device(&ctx->config, dev_key);
+                if (cdev && cdev->dpi_preset_count > 0) {
+                    for (size_t p = 0; p < cdev->dpi_preset_count; p++) {
+                        if (cdev->dpi_presets[p] == cur_dpi) {
+                            next_dpi = cdev->dpi_presets[(p + 1) % cdev->dpi_preset_count];
+                            break;
+                        }
                     }
                 }
+                pthread_mutex_unlock(&g_config_lock);
+                daemon_set_dpi(ctx, dev_key, next_dpi);
+                char payload[256];
+                snprintf(payload, sizeof(payload), "{\"device_key\":\"%s\",\"cycled\":true,\"dpi\":%u}", dev_key, next_dpi);
+                ipc_server_broadcast_event("dpi_changed", payload);
             }
-            daemon_set_dpi(ctx, ctx->devices[i].device_key, next_dpi);
         }
-        ipc_server_broadcast_event("dpi_changed", "{\"cycled\":true}");
         return;
     }
 
     if (action->type == ACTION_SET_DPI_PRESET) {
-        uint8_t p_idx = action->u.dpi_preset_index;
-        if (ctx->config.device_count > 0 && p_idx < ctx->config.devices[0].dpi_preset_count) {
-            uint16_t target = ctx->config.devices[0].dpi_presets[p_idx];
-            for (size_t i = 0; i < ctx->device_count; i++) {
-                daemon_set_dpi(ctx, ctx->devices[i].device_key, target);
+        const char *dev_key = target_device_key;
+        if (!dev_key && ctx->device_count > 0) {
+            pthread_mutex_lock(&g_config_lock);
+            const config_device_t *cdev = daemon_get_active_device_config(ctx);
+            dev_key = (cdev && cdev->device_key[0]) ? cdev->device_key : ctx->devices[0].device_key;
+            pthread_mutex_unlock(&g_config_lock);
+        }
+        if (dev_key) {
+            uint8_t p_idx = action->u.dpi_preset_index;
+            pthread_mutex_lock(&g_config_lock);
+            const config_device_t *cdev = config_resolve_device(&ctx->config, dev_key);
+            if (cdev && p_idx < cdev->dpi_preset_count) {
+                uint16_t target = cdev->dpi_presets[p_idx];
+                pthread_mutex_unlock(&g_config_lock);
+                daemon_set_dpi(ctx, dev_key, target);
+                char payload[256];
+                snprintf(payload, sizeof(payload), "{\"device_key\":\"%s\",\"dpi\":%u}", dev_key, target);
+                ipc_server_broadcast_event("dpi_changed", payload);
+            } else {
+                pthread_mutex_unlock(&g_config_lock);
             }
         }
         return;
@@ -154,34 +261,42 @@ static void daemon_dispatch_action(openlogi_daemon_ctx_t *ctx, const openlogi_ac
     }
 }
 
-static void daemon_input_dispatch(void *context, config_button_id_t button,
-                                  gesture_direction_t direction, const openlogi_action_t *action)
+static void daemon_device_input_dispatch(void *context, config_button_id_t button,
+                                         gesture_direction_t direction, const openlogi_action_t *action)
 {
-    openlogi_daemon_ctx_t *ctx = context;
-    daemon_dispatch_action(ctx, action, button_id_to_string(button));
-    char payload[160];
-    snprintf(payload, sizeof(payload), "{\"button\":\"%s\",\"direction\":\"%s\"}",
+    device_dispatch_ctx_t *dctx = (device_dispatch_ctx_t *)context;
+    if (!dctx || !dctx->ctx) return;
+    openlogi_daemon_ctx_t *ctx = dctx->ctx;
+    const char *dev_key = dctx->device_key[0] ? dctx->device_key : NULL;
+
+    daemon_dispatch_action(ctx, action, button_id_to_string(button), dev_key);
+    char payload[256];
+    snprintf(payload, sizeof(payload), "{\"device_key\":\"%s\",\"button\":\"%s\",\"direction\":\"%s\"}",
+             dev_key ? dev_key : "default",
              button_id_to_string(button), gesture_direction_name(direction));
     ipc_server_broadcast_event("button_triggered", payload);
 }
 
-static const config_device_t *daemon_get_active_device_config(const openlogi_daemon_ctx_t *ctx)
+static void daemon_hook_input_dispatch(void *context, config_button_id_t button,
+                                       gesture_direction_t direction, const openlogi_action_t *action)
 {
-    if (!ctx || ctx->config.device_count == 0) return NULL;
-    const char *sel = ctx->config.selected_device;
-    if (sel[0] != '\0') {
-        for (size_t i = 0; i < ctx->config.device_count; i++) {
-            if (strcmp(ctx->config.devices[i].device_key, sel) == 0) {
-                return &ctx->config.devices[i];
-            }
-        }
+    openlogi_daemon_ctx_t *ctx = (openlogi_daemon_ctx_t *)context;
+    if (!ctx) return;
+
+    pthread_mutex_lock(&g_config_lock);
+    const config_device_t *cdev = daemon_get_active_device_config(ctx);
+    char dev_key[128] = { 0 };
+    if (cdev && cdev->device_key[0]) {
+        strncpy(dev_key, cdev->device_key, sizeof(dev_key) - 1);
     }
-    for (size_t i = 0; i < ctx->config.device_count; i++) {
-        if (strcmp(ctx->config.devices[i].device_key, "default") == 0) {
-            return &ctx->config.devices[i];
-        }
-    }
-    return &ctx->config.devices[0];
+    pthread_mutex_unlock(&g_config_lock);
+
+    daemon_dispatch_action(ctx, action, button_id_to_string(button), dev_key[0] ? dev_key : NULL);
+    char payload[256];
+    snprintf(payload, sizeof(payload), "{\"device_key\":\"%s\",\"button\":\"%s\",\"direction\":\"%s\"}",
+             dev_key[0] ? dev_key : "default",
+             button_id_to_string(button), gesture_direction_name(direction));
+    ipc_server_broadcast_event("button_triggered", payload);
 }
 
 static hook_action_t on_hook_event(const hook_event_t *event, void *user_data)
@@ -189,8 +304,11 @@ static hook_action_t on_hook_event(const hook_event_t *event, void *user_data)
     (void)user_data;
     if (!event || g_daemon_ctx.runtime_state != RUNTIME_STATE_ACTIVE) return HOOK_ACTION_PASS;
     if (event->type == HOOK_EVENT_SCROLL) {
+        pthread_mutex_lock(&g_config_lock);
         const config_device_t *device = daemon_get_active_device_config(&g_daemon_ctx);
-        return device && device->enabled && device->invert_scroll ? HOOK_ACTION_INVERT : HOOK_ACTION_PASS;
+        bool invert = device && device->enabled && device->invert_scroll;
+        pthread_mutex_unlock(&g_config_lock);
+        return invert ? HOOK_ACTION_INVERT : HOOK_ACTION_PASS;
     }
     config_button_id_t button = CONFIG_BUTTON_UNKNOWN;
     if (event->button_number == 3) button = CONFIG_BUTTON_MIDDLE;
@@ -203,30 +321,16 @@ static hook_action_t on_hook_event(const hook_event_t *event, void *user_data)
     if (event->type != HOOK_EVENT_BUTTON_DOWN && event->type != HOOK_EVENT_BUTTON_UP) return HOOK_ACTION_PASS;
     char app[256] = { 0 };
     app_watch_get_cached(app, sizeof(app));
+
+    pthread_mutex_lock(&g_config_lock);
     const config_button_binding_t *binding = config_resolve_binding(&g_daemon_ctx.config, NULL, app, button);
     /* Raw gesture movement requires HID delivery, not the global OS fallback. */
     if (binding && binding->is_gesture) binding = NULL;
-    return input_runtime_button(&g_hook_input, button, event->type == HOOK_EVENT_BUTTON_DOWN, binding)
-        ? HOOK_ACTION_SUPPRESS : HOOK_ACTION_PASS;
+    bool suppress = input_runtime_button(&g_hook_input, button, event->type == HOOK_EVENT_BUTTON_DOWN, binding);
+    pthread_mutex_unlock(&g_config_lock);
+
+    return suppress ? HOOK_ACTION_SUPPRESS : HOOK_ACTION_PASS;
 }
-
-typedef struct {
-    hid_device_t *dev_handle;
-    hid_device_t *secondary_handle;
-    uint8_t device_index;
-    uint8_t sw_id;
-    uint8_t feat_dpi;
-    uint8_t feat_smartshift;
-    uint8_t feat_reprog;
-    uint8_t feat_hires_wheel;
-    input_runtime_t input;
-    capture_spec_t captured;
-    hidpp_cid_info_t controls[32];
-    uint8_t control_count;
-    bool controls_loaded;
-} live_device_handle_t;
-
-static live_device_handle_t g_live_handles[OPENLOGI_MAX_DEVICES];
 
 static void daemon_cancel_input(void)
 {
@@ -244,8 +348,10 @@ static void on_hid_report_event(hid_device_t *dev, const hidpp_raw_report_t *raw
         if (handle->dev_handle != dev && handle->secondary_handle != dev) continue;
         char app[256] = { 0 };
         app_watch_get_cached(app, sizeof(app));
+        pthread_mutex_lock(&g_config_lock);
         input_runtime_report(&handle->input, raw, handle->feat_reprog,
                              &ctx->config, ctx->devices[i].device_key, app);
+        pthread_mutex_unlock(&g_config_lock);
         break;
     }
 }
@@ -399,6 +505,7 @@ static void daemon_probe_hardware(openlogi_daemon_ctx_t *ctx)
                         hid_device_t *sec_dev = hid_open(info->transport_path);
                         if (sec_dev) {
                             g_live_handles[d].secondary_handle = sec_dev;
+                            strncpy(g_live_handles[d].secondary_transport, info->transport_path, sizeof(g_live_handles[d].secondary_transport) - 1);
                         }
                     }
                     break;
@@ -420,7 +527,19 @@ static void daemon_probe_hardware(openlogi_daemon_ctx_t *ctx)
                 snprintf(st->device_key, sizeof(st->device_key), "device:%s", info->serial_number);
                 strncpy(st->serial_number, info->serial_number, sizeof(st->serial_number) - 1);
             } else {
-                snprintf(st->device_key, sizeof(st->device_key), "dev:0x%04x:0x%04x", info->vendor_id, info->product_id);
+                char base_key[64];
+                snprintf(base_key, sizeof(base_key), "dev:0x%04x:0x%04x", info->vendor_id, info->product_id);
+                int count_same = 0;
+                for (size_t d = 0; d < ctx->device_count; d++) {
+                    if (strncmp(ctx->devices[d].device_key, base_key, strlen(base_key)) == 0) {
+                        count_same++;
+                    }
+                }
+                if (count_same == 0) {
+                    snprintf(st->device_key, sizeof(st->device_key), "%s", base_key);
+                } else {
+                    snprintf(st->device_key, sizeof(st->device_key), "%s:%d", base_key, count_same + 1);
+                }
             }
 
             strncpy(st->product_name, probed.name[0] ? probed.name : info->product_name, sizeof(st->product_name) - 1);
@@ -433,9 +552,16 @@ static void daemon_probe_hardware(openlogi_daemon_ctx_t *ctx)
             st->smartshift_threshold = probed.smartshift_threshold;
             st->online = true;
 
-            input_runtime_init(&g_live_handles[idx].input, daemon_input_dispatch, ctx);
+            g_live_handles[idx].generation++;
+            g_live_handles[idx].dispatch_ctx.ctx = ctx;
+            strncpy(g_live_handles[idx].dispatch_ctx.device_key, st->device_key, sizeof(g_live_handles[idx].dispatch_ctx.device_key) - 1);
+            g_live_handles[idx].dispatch_ctx.generation = g_live_handles[idx].generation;
+
+            input_runtime_init(&g_live_handles[idx].input, daemon_device_input_dispatch, &g_live_handles[idx].dispatch_ctx);
             g_live_handles[idx].dev_handle = dev;
             g_live_handles[idx].secondary_handle = NULL;
+            strncpy(g_live_handles[idx].primary_transport, info->transport_path, sizeof(g_live_handles[idx].primary_transport) - 1);
+            g_live_handles[idx].secondary_transport[0] = '\0';
             g_live_handles[idx].device_index = HIDPP_DEVICE_RECEIVER;
             g_live_handles[idx].sw_id = HIDPP_DEFAULT_SW_ID;
             g_live_handles[idx].feat_dpi = probed.feat_dpi;
@@ -443,18 +569,10 @@ static void daemon_probe_hardware(openlogi_daemon_ctx_t *ctx)
             g_live_handles[idx].feat_reprog = probed.feat_reprog_controls;
             g_live_handles[idx].feat_hires_wheel = probed.feat_hires_wheel;
 
-            const config_device_t *cdev = NULL;
-            for (size_t cd = 0; cd < ctx->config.device_count; cd++) {
-                if (strcmp(ctx->config.devices[cd].device_key, st->device_key) == 0 ||
-                    strcmp(ctx->config.devices[cd].device_key, "default") == 0) {
-                    cdev = &ctx->config.devices[cd];
-                    break;
-                }
-            }
-            if (!cdev && ctx->config.device_count > 0) {
-                cdev = &ctx->config.devices[0];
-            }
-
+            pthread_mutex_lock(&g_config_lock);
+            const config_device_t *cdev = config_resolve_device(&ctx->config, st->device_key);
+            bool inv_scroll = cdev ? cdev->invert_scroll : false;
+            pthread_mutex_unlock(&g_config_lock);
 
             /* Configure hardware hi-res wheel inversion if Feature 0x2121 is supported */
             if (probed.feat_hires_wheel != 0) {
@@ -462,7 +580,7 @@ static void daemon_probe_hardware(openlogi_daemon_ctx_t *ctx)
                 hires_wheel_build_mode_request(
                     probed.feat_hires_wheel,
                     HIDPP_DEFAULT_SW_ID,
-                    cdev ? cdev->invert_scroll : false,
+                    inv_scroll,
                     false,
                     &hw_req
                 );
@@ -494,24 +612,18 @@ static void daemon_probe_hardware(openlogi_daemon_ctx_t *ctx)
     for (size_t p = 0; p < plan.target_count; p++) {
         size_t idx = plan.target_indices[p];
         if (idx < ctx->device_count && ctx->devices[idx].online) {
-            const config_device_t *cdev = NULL;
-            for (size_t cd = 0; cd < ctx->config.device_count; cd++) {
-                if (strcmp(ctx->config.devices[cd].device_key, ctx->devices[idx].device_key) == 0 ||
-                    strcmp(ctx->config.devices[cd].device_key, "default") == 0) {
-                    cdev = &ctx->config.devices[cd];
-                    break;
-                }
+            pthread_mutex_lock(&g_config_lock);
+            const config_device_t *cdev = config_resolve_device(&ctx->config, ctx->devices[idx].device_key);
+            uint16_t target_dpi = cdev ? cdev->dpi : 0;
+            uint8_t ss_mode = cdev ? cdev->smartshift_mode : 0;
+            uint8_t ss_thresh = cdev ? cdev->smartshift_threshold : 0;
+            pthread_mutex_unlock(&g_config_lock);
+
+            if (target_dpi > 0 && ctx->devices[idx].dpi != target_dpi) {
+                daemon_set_dpi(ctx, ctx->devices[idx].device_key, target_dpi);
             }
-            if (!cdev && ctx->config.device_count > 0) {
-                cdev = &ctx->config.devices[0];
-            }
-            if (cdev) {
-                if (cdev->dpi > 0 && ctx->devices[idx].dpi != cdev->dpi) {
-                    daemon_set_dpi(ctx, ctx->devices[idx].device_key, cdev->dpi);
-                }
-                if (cdev->smartshift_threshold > 0) {
-                    daemon_set_smartshift(ctx, ctx->devices[idx].device_key, cdev->smartshift_mode, cdev->smartshift_threshold);
-                }
+            if (ss_thresh > 0) {
+                daemon_set_smartshift(ctx, ctx->devices[idx].device_key, ss_mode, ss_thresh);
             }
         }
     }
@@ -534,15 +646,29 @@ static void on_hotplug_event(const hid_device_info_t *info, bool connected, void
         }
         for (size_t i = 0; i < ctx->device_count; i++) {
             bool match = false;
-            if (info->serial_number[0] != '\0' && ctx->devices[i].serial_number[0] != '\0') {
+            if (g_live_handles[i].primary_transport[0] != '\0' &&
+                strcmp(g_live_handles[i].primary_transport, info->transport_path) == 0) {
+                match = true;
+            } else if (g_live_handles[i].secondary_transport[0] != '\0' &&
+                       strcmp(g_live_handles[i].secondary_transport, info->transport_path) == 0) {
+                if (g_live_handles[i].secondary_handle) {
+                    hidpp_diversion_untrack_device(g_live_handles[i].secondary_handle);
+                    g_live_handles[i].secondary_handle = NULL;
+                }
+                g_live_handles[i].secondary_transport[0] = '\0';
+                continue;
+            } else if (info->serial_number[0] != '\0' && ctx->devices[i].serial_number[0] != '\0') {
                 match = (strcmp(ctx->devices[i].serial_number, info->serial_number) == 0);
             } else if (ctx->devices[i].vendor_id == info->vendor_id &&
-                       ctx->devices[i].product_id == info->product_id) {
+                       ctx->devices[i].product_id == info->product_id &&
+                       ctx->devices[i].online) {
                 match = true;
             }
 
             if (match) {
                 ctx->devices[i].online = false;
+                g_live_handles[i].generation++;
+                g_live_handles[i].dispatch_ctx.generation = g_live_handles[i].generation;
                 if (g_live_handles[i].dev_handle) {
                     hidpp_diversion_untrack_device(g_live_handles[i].dev_handle);
                     g_live_handles[i].dev_handle = NULL;
@@ -551,14 +677,17 @@ static void on_hotplug_event(const hid_device_info_t *info, bool connected, void
                     hidpp_diversion_untrack_device(g_live_handles[i].secondary_handle);
                     g_live_handles[i].secondary_handle = NULL;
                 }
-                /* Per-device disconnect cleanup */
+                g_live_handles[i].primary_transport[0] = '\0';
+                g_live_handles[i].secondary_transport[0] = '\0';
+
+                /* Per-device disconnect cleanup: cancels only this device's input runtime */
                 input_runtime_cancel(&g_live_handles[i].input);
                 capture_spec_init(&g_live_handles[i].captured);
-                action_queue_clear_pending();
 
                 char payload[128];
                 snprintf(payload, sizeof(payload), "{\"device_key\":\"%s\",\"online\":false}", ctx->devices[i].device_key);
                 ipc_server_broadcast_event("device_disconnected", payload);
+                break;
             }
         }
         g_pending_reconcile = true;
@@ -581,32 +710,30 @@ static bool daemon_set_dpi(openlogi_daemon_ctx_t *ctx, const char *dev_key, uint
         printf("[openlogid] Setting DPI to %u for device %s\n", dpi, dev_key ? dev_key : "default");
     }
 
-    bool matched = false;
-    for (size_t i = 0; i < ctx->device_count; i++) {
-        if (!dev_key || strcmp(ctx->devices[i].device_key, dev_key) == 0) {
-            matched = true;
-            if (g_live_handles[i].dev_handle && g_live_handles[i].feat_dpi != 0) {
-                bool ok = hidpp_write_dpi(g_live_handles[i].dev_handle,
-                                          g_live_handles[i].device_index,
-                                          g_live_handles[i].feat_dpi,
-                                          g_live_handles[i].sw_id,
-                                          dpi);
-                if (ok) {
-                    ctx->devices[i].dpi = dpi;
-                    return true;
-                } else {
-                    if (g_verbose) {
-                        fprintf(stderr, "[openlogid] Failed to write DPI to device %s\n", ctx->devices[i].device_key);
-                    }
-                    return false;
-                }
-            } else {
-                ctx->devices[i].dpi = dpi;
-                return true;
-            }
-        }
+    ssize_t idx = find_device_index(ctx, dev_key);
+    if (idx < 0 || (size_t)idx >= ctx->device_count) {
+        return false;
     }
-    return matched;
+    size_t i = (size_t)idx;
+    if (g_live_handles[i].dev_handle && g_live_handles[i].feat_dpi != 0) {
+        bool ok = hidpp_write_dpi(g_live_handles[i].dev_handle,
+                                  g_live_handles[i].device_index,
+                                  g_live_handles[i].feat_dpi,
+                                  g_live_handles[i].sw_id,
+                                  dpi);
+        if (ok) {
+            ctx->devices[i].dpi = dpi;
+            return true;
+        } else {
+            if (g_verbose) {
+                fprintf(stderr, "[openlogid] Failed to write DPI to device %s\n", ctx->devices[i].device_key);
+            }
+            return false;
+        }
+    } else {
+        ctx->devices[i].dpi = dpi;
+        return true;
+    }
 }
 
 static bool daemon_set_smartshift(openlogi_daemon_ctx_t *ctx, const char *dev_key, uint8_t mode, uint8_t threshold)
@@ -616,35 +743,33 @@ static bool daemon_set_smartshift(openlogi_daemon_ctx_t *ctx, const char *dev_ke
                mode, threshold, dev_key ? dev_key : "default");
     }
 
-    bool matched = false;
-    for (size_t i = 0; i < ctx->device_count; i++) {
-        if (!dev_key || strcmp(ctx->devices[i].device_key, dev_key) == 0) {
-            matched = true;
-            if (g_live_handles[i].dev_handle && g_live_handles[i].feat_smartshift != 0) {
-                bool ok = hidpp_write_smartshift(g_live_handles[i].dev_handle,
-                                                 g_live_handles[i].device_index,
-                                                 g_live_handles[i].feat_smartshift,
-                                                 g_live_handles[i].sw_id,
-                                                 (smartshift_mode_t)mode,
-                                                 threshold);
-                if (ok) {
-                    ctx->devices[i].smartshift_mode = mode;
-                    ctx->devices[i].smartshift_threshold = threshold;
-                    return true;
-                } else {
-                    if (g_verbose) {
-                        fprintf(stderr, "[openlogid] Failed to write SmartShift to device %s\n", ctx->devices[i].device_key);
-                    }
-                    return false;
-                }
-            } else {
-                ctx->devices[i].smartshift_mode = mode;
-                ctx->devices[i].smartshift_threshold = threshold;
-                return true;
-            }
-        }
+    ssize_t idx = find_device_index(ctx, dev_key);
+    if (idx < 0 || (size_t)idx >= ctx->device_count) {
+        return false;
     }
-    return matched;
+    size_t i = (size_t)idx;
+    if (g_live_handles[i].dev_handle && g_live_handles[i].feat_smartshift != 0) {
+        bool ok = hidpp_write_smartshift(g_live_handles[i].dev_handle,
+                                         g_live_handles[i].device_index,
+                                         g_live_handles[i].feat_smartshift,
+                                         g_live_handles[i].sw_id,
+                                         (smartshift_mode_t)mode,
+                                         threshold);
+        if (ok) {
+            ctx->devices[i].smartshift_mode = mode;
+            ctx->devices[i].smartshift_threshold = threshold;
+            return true;
+        } else {
+            if (g_verbose) {
+                fprintf(stderr, "[openlogid] Failed to write SmartShift to device %s\n", ctx->devices[i].device_key);
+            }
+            return false;
+        }
+    } else {
+        ctx->devices[i].smartshift_mode = mode;
+        ctx->devices[i].smartshift_threshold = threshold;
+        return true;
+    }
 }
 
 static bool daemon_reload_config(openlogi_daemon_ctx_t *ctx)
@@ -660,10 +785,14 @@ static bool daemon_reload_config(openlogi_daemon_ctx_t *ctx)
         free(new_cfg);
         return false;
     }
-    daemon_cancel_input();
-    config_free(&ctx->config);
+
+    pthread_mutex_lock(&g_config_lock);
+    openlogi_config_t old_cfg = ctx->config;
     ctx->config = *new_cfg;
     free(new_cfg);
+    pthread_mutex_unlock(&g_config_lock);
+
+    config_free(&old_cfg);
 
     if (ctx->runtime_state == RUNTIME_STATE_ACTIVE && hook_is_running()) {
         daemon_apply_diversion(ctx);
@@ -753,7 +882,7 @@ int daemon_main(int argc, char **argv)
     signals_init();
     inject_init();
     action_queue_init();
-    input_runtime_init(&g_hook_input, daemon_input_dispatch, &g_daemon_ctx);
+    input_runtime_init(&g_hook_input, daemon_hook_input_dispatch, &g_daemon_ctx);
 
     /* 2. Determine Paths */
     if (g_socket_file[0] == '\0') {

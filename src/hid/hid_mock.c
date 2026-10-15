@@ -39,6 +39,10 @@ hid_device_t *hid_mock_create_mx_master_3s(void)
     dev->mock_smartshift_mode = 3; /* Auto */
     dev->mock_smartshift_threshold = 14;
 
+    dev->ref_count = 1;
+    dev->removed = false;
+    pthread_mutex_init(&dev->tx_lock, NULL);
+
     return dev;
 }
 
@@ -46,7 +50,16 @@ void hid_mock_destroy(hid_device_t *dev)
 {
     if (dev) {
         hidpp_diversion_untrack_device(dev);
-        free(dev);
+        pthread_mutex_lock(&dev->tx_lock);
+        dev->removed = true;
+        dev->ref_count--;
+        bool should_free = (dev->ref_count <= 0);
+        pthread_mutex_unlock(&dev->tx_lock);
+
+        if (should_free) {
+            pthread_mutex_destroy(&dev->tx_lock);
+            free(dev);
+        }
     }
 }
 

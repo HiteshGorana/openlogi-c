@@ -63,6 +63,7 @@ void input_runtime_cancel(input_runtime_t *runtime)
 {
     for (size_t i = 0; i < INPUT_CONTROL_COUNT; i++) {
         binding_free(&runtime->presses[i].binding);
+        runtime->presses[i].captured = false;
         runtime->presses[i].canceled = true;
         swipe_accumulator_init(&runtime->presses[i].gesture);
     }
@@ -71,7 +72,8 @@ void input_runtime_cancel(input_runtime_t *runtime)
 bool input_runtime_captured(const input_runtime_t *runtime, config_button_id_t button)
 {
     return button > CONFIG_BUTTON_UNKNOWN && button < INPUT_CONTROL_COUNT &&
-        runtime->presses[button].down && runtime->presses[button].captured;
+        runtime->presses[button].down && runtime->presses[button].captured &&
+        !runtime->presses[button].canceled;
 }
 
 static void dispatch(input_runtime_t *runtime, config_button_id_t button, gesture_direction_t direction)

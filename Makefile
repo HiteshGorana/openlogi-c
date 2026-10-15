@@ -103,7 +103,9 @@ TEST_BINS = $(BIN_DIR)/test_hidpp_packet \
             $(BIN_DIR)/test_hires_wheel_curve \
             $(BIN_DIR)/test_actions \
             $(BIN_DIR)/test_action_queue \
-            $(BIN_DIR)/test_lightweight_standby $(BIN_DIR)/test_onboarding
+            $(BIN_DIR)/test_lightweight_standby \
+            $(BIN_DIR)/test_onboarding \
+            $(BIN_DIR)/test_device_ownership
 
 TOOLS = $(BIN_DIR)/openlogi $(BIN_DIR)/openlogid $(BIN_DIR)/openlogictl $(BIN_DIR)/openlogi_discover
 
@@ -238,6 +240,10 @@ $(BIN_DIR)/test_lightweight_standby: tests/test_lightweight_standby.c $(CORE_OBJ
 $(BIN_DIR)/test_onboarding: tests/test_onboarding.c $(BUILD_DIR)/src/core/onboarding.o
 	@mkdir -p $(BIN_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $^ $(LDFLAGS) -o $@
+
+$(BIN_DIR)/test_device_ownership: tests/test_device_ownership.c $(CORE_OBJS)
+	@mkdir -p $(BIN_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(CORE_OBJS) $(LDFLAGS) -o $@
 
 $(BIN_DIR)/openlogi: $(BUILD_DIR)/src/cli/openlogi.o $(BUILD_DIR)/src/daemon/main.o $(BUILD_DIR)/src/cli/openlogictl.o $(BUILD_DIR)/src/cli/openlogi_discover.o $(CORE_OBJS)
 	@mkdir -p $(BIN_DIR)

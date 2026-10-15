@@ -228,7 +228,17 @@ static yyjson_mut_val *handle_set_dpi(openlogi_daemon_ctx_t *ctx, yyjson_val *pa
 
     const char *dev_key = yyjson_get_str(yyjson_obj_get(params, "device_key"));
     if (!dev_key && ctx && ctx->device_count > 0) {
-        dev_key = ctx->devices[0].device_key;
+        if (ctx->config.selected_device[0] != '\0') {
+            dev_key = ctx->config.selected_device;
+        } else {
+            for (size_t i = 0; i < ctx->device_count; i++) {
+                if (ctx->devices[i].online) {
+                    dev_key = ctx->devices[i].device_key;
+                    break;
+                }
+            }
+            if (!dev_key) dev_key = ctx->devices[0].device_key;
+        }
     }
 
     bool success = true;
@@ -288,7 +298,17 @@ static yyjson_mut_val *handle_set_smartshift(openlogi_daemon_ctx_t *ctx, yyjson_
 
     const char *dev_key = yyjson_get_str(yyjson_obj_get(params, "device_key"));
     if (!dev_key && ctx && ctx->device_count > 0) {
-        dev_key = ctx->devices[0].device_key;
+        if (ctx->config.selected_device[0] != '\0') {
+            dev_key = ctx->config.selected_device;
+        } else {
+            for (size_t i = 0; i < ctx->device_count; i++) {
+                if (ctx->devices[i].online) {
+                    dev_key = ctx->devices[i].device_key;
+                    break;
+                }
+            }
+            if (!dev_key) dev_key = ctx->devices[0].device_key;
+        }
     }
 
     bool success = true;

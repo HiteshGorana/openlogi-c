@@ -37,14 +37,14 @@ if [ "$1" = "-v" ] || [ "$1" = "--verbose" ] || [ "$1" = "1" ] || [ "$VERBOSE" =
     VERBOSE=1
 fi
 
-TOTAL_SUITES=22
+TOTAL_SUITES=23
 PASSED_SUITES=0
 FAILED_SUITES=0
 TOTAL_TESTS=0
 
 printf "\n%b================================================================================%b\n" "$C_CYAN" "$C_RESET"
 printf "%b                     OpenLogi Pure C Test Suite Runner%b\n" "$C_BOLD" "$C_RESET"
-printf "          %b22 Test Suites  •  Unit and regression checks%b\n" "$C_GRAY" "$C_RESET"
+printf "          %b23 Test Suites  •  Unit and regression checks%b\n" "$C_GRAY" "$C_RESET"
 printf "%b================================================================================%b\n\n" "$C_CYAN" "$C_RESET"
 
 run_suite() {
@@ -112,6 +112,7 @@ run_suite 19 test_actions                   6 "Complete 53-Action Catalog & Work
 run_suite 20 test_action_queue              4 "Asynchronous Non-Blocking Action Queue"
 run_suite 21 test_lightweight_standby        7 "Lightweight Standby Transitions & Safety Invariants"
 run_suite 22 test_onboarding                 9 "Resumable Setup & Permission Verification"
+run_suite 23 test_device_ownership          5 "Device Ownership, Disconnect Safety & Isolation"
 
 printf "\n%b================================================================================%b\n" "$C_CYAN" "$C_RESET"
 if [ $FAILED_SUITES -eq 0 ]; then

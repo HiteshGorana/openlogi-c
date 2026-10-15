@@ -7,6 +7,7 @@
 
 #include "hid_transport.h"
 #include "hidpp.h"
+#include "hid_mock.h"
 
 #include <IOKit/hid/IOHIDManager.h>
 #include <IOKit/hid/IOHIDKeys.h>
@@ -111,6 +112,7 @@ static void on_input_report(
     }
 
     /* Check if pending synchronous transaction is waiting for this message */
+    pthread_mutex_lock(&dev->tx_lock);
     if (dev->has_pending_tx && !dev->pending_resp_ready) {
         hidpp_msg_t incoming;
         if (hidpp_unpack(&raw, &incoming)) {
@@ -134,6 +136,7 @@ static void on_input_report(
             }
         }
     }
+    pthread_mutex_unlock(&dev->tx_lock);
 
     /* Deliver to asynchronous report listener if registered */
     if (dev->report_cb) {
@@ -250,6 +253,9 @@ static void on_device_matching(void *context, IOReturn result, void *sender, IOH
     dev->backend_type = HID_BACKEND_IOKIT;
     dev->io_device = dev_ref;
     dev->registry_entry_id = reg_id;
+    dev->ref_count = 1;
+    dev->removed = false;
+    pthread_mutex_init(&dev->tx_lock, NULL);
     populate_device_info(dev_ref, &dev->info);
 
     /* Formally associate device with RunLoop for asynchronous report delivery */
@@ -294,7 +300,18 @@ static void on_device_removal(void *context, IOReturn result, void *sender, IOHI
                 g_devices[j] = g_devices[j + 1];
             }
             g_devices[--g_device_count] = NULL;
-            free(dev);
+
+            pthread_mutex_lock(&dev->tx_lock);
+            dev->removed = true;
+            dev->has_pending_tx = false;
+            dev->ref_count--;
+            bool should_free = (dev->ref_count <= 0);
+            pthread_mutex_unlock(&dev->tx_lock);
+
+            if (should_free) {
+                pthread_mutex_destroy(&dev->tx_lock);
+                free(dev);
+            }
             break;
         }
     }
@@ -408,18 +425,30 @@ void hid_transport_shutdown(void)
 
     for (size_t i = 0; i < g_device_count; i++) {
         if (g_devices[i]) {
-            if (g_devices[i]->io_device) {
+            hid_device_t *dev = g_devices[i];
+            if (dev->io_device) {
                 IOHIDDeviceRegisterInputReportCallback(
-                    g_devices[i]->io_device,
-                    g_devices[i]->input_buffer,
-                    sizeof(g_devices[i]->input_buffer),
+                    dev->io_device,
+                    dev->input_buffer,
+                    sizeof(dev->input_buffer),
                     NULL,
                     NULL
                 );
-                IOHIDDeviceUnscheduleFromRunLoop(g_devices[i]->io_device, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
+                IOHIDDeviceUnscheduleFromRunLoop(dev->io_device, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
             }
-            free(g_devices[i]);
             g_devices[i] = NULL;
+
+            pthread_mutex_lock(&dev->tx_lock);
+            dev->removed = true;
+            dev->has_pending_tx = false;
+            dev->ref_count--;
+            bool should_free = (dev->ref_count <= 0);
+            pthread_mutex_unlock(&dev->tx_lock);
+
+            if (should_free) {
+                pthread_mutex_destroy(&dev->tx_lock);
+                free(dev);
+            }
         }
     }
     g_device_count = 0;
@@ -464,8 +493,9 @@ hid_device_t *hid_open(const char *transport_path)
 
 void hid_close(hid_device_t *dev)
 {
-    if (dev && dev->backend_type == HID_BACKEND_MOCK) {
-        free(dev);
+    if (!dev) return;
+    if (dev->backend_type == HID_BACKEND_MOCK) {
+        hid_mock_destroy(dev);
         return;
     }
     /* Real IOKit handles are managed by manager teardown */
@@ -552,6 +582,15 @@ bool hid_transact(
         return hid_mock_process_transaction(dev, req, out_resp);
     }
 
+    pthread_mutex_lock(&dev->tx_lock);
+    if (dev->removed) {
+        pthread_mutex_unlock(&dev->tx_lock);
+        return false;
+    }
+
+    /* Retain device during transaction so disconnect during wait doesn't cause use-after-free */
+    dev->ref_count++;
+
     /* Pack request into raw report */
     hidpp_raw_report_t raw_req;
     hidpp_v20_msg_t outbound = *req;
@@ -563,6 +602,13 @@ bool hid_transact(
     }
 
     if (!hidpp_v20_pack(&outbound, &raw_req)) {
+        dev->ref_count--;
+        bool should_free = (dev->ref_count <= 0);
+        pthread_mutex_unlock(&dev->tx_lock);
+        if (should_free) {
+            pthread_mutex_destroy(&dev->tx_lock);
+            free(dev);
+        }
         return false;
     }
 
@@ -573,24 +619,58 @@ bool hid_transact(
 
     if (!hid_send_report(dev, &raw_req)) {
         dev->has_pending_tx = false;
+        dev->ref_count--;
+        bool should_free = (dev->ref_count <= 0);
+        pthread_mutex_unlock(&dev->tx_lock);
+        if (should_free) {
+            pthread_mutex_destroy(&dev->tx_lock);
+            free(dev);
+        }
         return false;
     }
 
+    /* Wake main runloop to ensure prompt response processing */
+    CFRunLoopWakeUp(CFRunLoopGetMain());
+
     /* Wait for response by pumping CFRunLoop with small steps */
     uint64_t start_time = get_time_ms();
-    while (!dev->pending_resp_ready) {
+    bool ready = false;
+    while (true) {
+        if (dev->removed) {
+            break;
+        }
+        if (dev->pending_resp_ready) {
+            ready = true;
+            break;
+        }
         uint64_t elapsed = get_time_ms() - start_time;
         if (elapsed >= timeout_ms) {
-            dev->has_pending_tx = false;
-            return false; /* Timed out */
+            break; /* Timed out */
         }
 
+        /* Unlock mutex while running runloop so on_input_report / removal can acquire tx_lock */
+        pthread_mutex_unlock(&dev->tx_lock);
         CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, false);
+        pthread_mutex_lock(&dev->tx_lock);
     }
 
-    *out_resp = dev->pending_resp;
+    bool success = false;
+    if (ready && !dev->removed) {
+        *out_resp = dev->pending_resp;
+        success = true;
+    }
+
     dev->has_pending_tx = false;
-    return true;
+    dev->pending_resp_ready = false;
+    dev->ref_count--;
+    bool should_free = (dev->ref_count <= 0);
+    pthread_mutex_unlock(&dev->tx_lock);
+
+    if (should_free) {
+        pthread_mutex_destroy(&dev->tx_lock);
+        free(dev);
+    }
+    return success;
 }
 
 bool hid_register_report_callback(

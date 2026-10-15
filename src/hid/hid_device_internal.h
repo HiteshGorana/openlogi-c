@@ -9,6 +9,8 @@
 #include "hid_transport.h"
 #include "hidpp.h"
 
+#include <pthread.h>
+
 #ifdef __APPLE__
 #include <IOKit/hid/IOHIDManager.h>
 #endif
@@ -37,6 +39,11 @@ struct hid_device {
     hidpp_v20_msg_t pending_req;
     hidpp_msg_t pending_resp;
     bool pending_resp_ready;
+
+    /* Lifetime and transaction protection */
+    int ref_count;
+    bool removed;
+    pthread_mutex_t tx_lock;
 
     /* Mock backend state (if backend_type == HID_BACKEND_MOCK) */
     uint16_t mock_dpi;
