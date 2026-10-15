@@ -1,0 +1,14 @@
+CompileFlags:
+  CompilationDatabase: .
+  Add:
+    - -std=c99
+    - -Wall
+    - -Wextra
+    - -pedantic
+    - -Iinclude
+    - -Ivendor/yyjson
+    - -Ivendor/tomlc99
+
+Diagnostics:
+  Suppress:
+    - unused-includes

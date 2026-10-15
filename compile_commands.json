@@ -1,0 +1,971 @@
+[
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/cli/openlogi.c"
+    ],
+    "file": "src/cli/openlogi.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/cli/openlogi_discover.c"
+    ],
+    "file": "src/cli/openlogi_discover.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/cli/openlogictl.c"
+    ],
+    "file": "src/cli/openlogictl.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/core/action_queue.c"
+    ],
+    "file": "src/core/action_queue.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/core/armed_session.c"
+    ],
+    "file": "src/core/armed_session.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/core/button_runtime.c"
+    ],
+    "file": "src/core/button_runtime.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/core/capture_plan.c"
+    ],
+    "file": "src/core/capture_plan.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/core/config.c"
+    ],
+    "file": "src/core/config.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/core/config_watch.c"
+    ],
+    "file": "src/core/config_watch.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/core/daemon_state.c"
+    ],
+    "file": "src/core/daemon_state.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/core/device_reapply.c"
+    ],
+    "file": "src/core/device_reapply.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/core/dpi_cycle.c"
+    ],
+    "file": "src/core/dpi_cycle.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/core/gesture.c"
+    ],
+    "file": "src/core/gesture.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/core/hires_wheel.c"
+    ],
+    "file": "src/core/hires_wheel.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/core/onboarding.c"
+    ],
+    "file": "src/core/onboarding.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/core/scroll_math.c"
+    ],
+    "file": "src/core/scroll_math.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/core/scroll_pipeline.c"
+    ],
+    "file": "src/core/scroll_pipeline.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/core/signals.c"
+    ],
+    "file": "src/core/signals.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/core/single_instance.c"
+    ],
+    "file": "src/core/single_instance.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/core/spaces_shortcuts.c"
+    ],
+    "file": "src/core/spaces_shortcuts.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/core/tool_path.c"
+    ],
+    "file": "src/core/tool_path.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/daemon/main.c"
+    ],
+    "file": "src/daemon/main.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/hid/hid_mock.c"
+    ],
+    "file": "src/hid/hid_mock.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/hid/hidpp_diversion.c"
+    ],
+    "file": "src/hid/hidpp_diversion.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/hid/hidpp_features.c"
+    ],
+    "file": "src/hid/hidpp_features.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/hid/hidpp_packet.c"
+    ],
+    "file": "src/hid/hidpp_packet.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/hook/hook_macos.c"
+    ],
+    "file": "src/hook/hook_macos.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/inject/inject_macos.c"
+    ],
+    "file": "src/inject/inject_macos.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/ipc/ipc_client.c"
+    ],
+    "file": "src/ipc/ipc_client.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/ipc/ipc_server.c"
+    ],
+    "file": "src/ipc/ipc_server.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/platform/macos/app_watch.c"
+    ],
+    "file": "src/platform/macos/app_watch.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/platform/macos/hid_iokit.c"
+    ],
+    "file": "src/platform/macos/hid_iokit.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "src/platform/macos/onboarding_macos.c"
+    ],
+    "file": "src/platform/macos/onboarding_macos.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "tests/test_action_queue.c"
+    ],
+    "file": "tests/test_action_queue.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "tests/test_actions.c"
+    ],
+    "file": "tests/test_actions.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "tests/test_armed_session.c"
+    ],
+    "file": "tests/test_armed_session.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "tests/test_button_runtime.c"
+    ],
+    "file": "tests/test_button_runtime.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "tests/test_capture_plan.c"
+    ],
+    "file": "tests/test_capture_plan.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "tests/test_cli.c"
+    ],
+    "file": "tests/test_cli.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "tests/test_config.c"
+    ],
+    "file": "tests/test_config.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "tests/test_device_probe.c"
+    ],
+    "file": "tests/test_device_probe.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "tests/test_diversion_and_hook.c"
+    ],
+    "file": "tests/test_diversion_and_hook.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "tests/test_dpi_cycle.c"
+    ],
+    "file": "tests/test_dpi_cycle.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "tests/test_gesture_accumulator_edge.c"
+    ],
+    "file": "tests/test_gesture_accumulator_edge.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "tests/test_gesture_and_inject.c"
+    ],
+    "file": "tests/test_gesture_and_inject.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "tests/test_hidpp_packet.c"
+    ],
+    "file": "tests/test_hidpp_packet.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "tests/test_hires_wheel_curve.c"
+    ],
+    "file": "tests/test_hires_wheel_curve.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "tests/test_ipc_server.c"
+    ],
+    "file": "tests/test_ipc_server.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "tests/test_lightweight_standby.c"
+    ],
+    "file": "tests/test_lightweight_standby.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "tests/test_onboarding.c"
+    ],
+    "file": "tests/test_onboarding.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "tests/test_reapply_wake.c"
+    ],
+    "file": "tests/test_reapply_wake.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "tests/test_scroll_pipeline.c"
+    ],
+    "file": "tests/test_scroll_pipeline.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "tests/test_single_instance.c"
+    ],
+    "file": "tests/test_single_instance.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "tests/test_spaces_shortcuts.c"
+    ],
+    "file": "tests/test_spaces_shortcuts.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "tests/test_wheel_math.c"
+    ],
+    "file": "tests/test_wheel_math.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "vendor/tomlc99/toml.c"
+    ],
+    "file": "vendor/tomlc99/toml.c"
+  },
+  {
+    "directory": "/Users/hitesh/Documents/openlogi-c",
+    "arguments": [
+      "clang",
+      "-std=c99",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-pedantic",
+      "-Iinclude",
+      "-Ivendor/yyjson",
+      "-Ivendor/tomlc99",
+      "-c",
+      "vendor/yyjson/yyjson.c"
+    ],
+    "file": "vendor/yyjson/yyjson.c"
+  }
+]

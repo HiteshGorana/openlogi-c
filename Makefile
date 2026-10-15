@@ -107,9 +107,12 @@ TEST_BINS = $(BIN_DIR)/test_hidpp_packet \
 
 TOOLS = $(BIN_DIR)/openlogi $(BIN_DIR)/openlogid $(BIN_DIR)/openlogictl $(BIN_DIR)/openlogi_discover
 
-.PHONY: all test clean dirs tools install uninstall strip asan help info app
+.PHONY: all test clean dirs tools install uninstall strip asan help info app compdb
 
-all: dirs $(CORE_OBJS) $(TEST_BINS) $(TOOLS)
+all: dirs $(CORE_OBJS) $(TEST_BINS) $(TOOLS) compile_commands.json
+
+compdb compile_commands.json:
+	@python3 scripts/gen_compile_commands.py
 
 app: $(BIN_DIR)/openlogi
 ifeq ($(UNAME_S),Darwin)

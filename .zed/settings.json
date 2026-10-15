@@ -1,0 +1,35 @@
+{
+  "languages": {
+    "C": {
+      "language_servers": ["clangd"]
+    }
+  },
+  "lsp": {
+    "clangd": {
+      "arguments": [
+        "--compile-commands-dir=.",
+        "--background-index",
+        "--header-insertion=never"
+      ],
+      "initialization_options": {
+        "fallbackFlags": [
+          "-std=c99",
+          "-Wall",
+          "-Wextra",
+          "-pedantic",
+          "-Iinclude",
+          "-Ivendor/yyjson",
+          "-Ivendor/tomlc99"
+        ]
+      }
+    },
+    "sourcekit-lsp": {
+      "arguments": [
+        "--default-workspace-type",
+        "compilationDatabase",
+        "--compilation-db-search-path",
+        "."
+      ]
+    }
+  }
+}
